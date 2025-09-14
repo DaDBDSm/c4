@@ -1,7 +1,19 @@
-use std::{fmt::Error, io::Read, time::Instant};
+use std::{
+    io::{self, Read},
+    time::Instant,
+};
 
 pub type BucketName = String;
 pub type ObjectKey = String;
+
+pub enum StorageError {
+    IoError(io::Error),
+    BucketAlreadyExists(BucketName),
+    BucketNotFound(BucketName),
+    ObjectNotFound { bucket: BucketName, key: ObjectKey },
+    InvalidInput(String),
+    Internal(String),
+}
 
 pub struct ObjectMetadata {
     pub bucket_name: BucketName,
@@ -12,32 +24,36 @@ pub struct ObjectMetadata {
 }
 
 pub trait ObjectStorage {
-    fn create_bucket(&mut self, bucket_name: &BucketName) -> Result<(), Error>;
+    fn create_bucket(&mut self, bucket_name: &BucketName) -> Result<(), StorageError>;
 
-    fn delete_bucket(&mut self, bucket_name: &BucketName) -> Result<(), Error>;
+    fn delete_bucket(&mut self, bucket_name: &BucketName) -> Result<(), StorageError>;
 
-    fn list_buckets(&self) -> Result<Vec<BucketName>, Error>;
+    fn list_buckets(&self) -> Result<Vec<BucketName>, StorageError>;
 
     fn put_object<R: Read>(
         &mut self,
         bucket_name: &BucketName,
         key: &ObjectKey,
         reader: &mut R,
-    ) -> Result<ObjectMetadata, Error>;
+    ) -> Result<ObjectMetadata, StorageError>;
 
-    fn get_object<'a>(
+    fn get_object(
         &self,
         bucket_name: &BucketName,
         key: &ObjectKey,
-    ) -> Result<Box<dyn Read + 'a>, Error>;
+    ) -> Result<Box<dyn Read>, StorageError>;
 
     fn head_object(
         &self,
         bucket_name: &BucketName,
         key: &ObjectKey,
-    ) -> Result<ObjectMetadata, Error>;
+    ) -> Result<ObjectMetadata, StorageError>;
 
-    fn delete_object(&mut self, bucket_name: &BucketName, key: &ObjectKey) -> Result<(), Error>;
+    fn delete_object(
+        &mut self,
+        bucket_name: &BucketName,
+        key: &ObjectKey,
+    ) -> Result<(), StorageError>;
 
-    fn list_objects(&self, offset: u64, limit: u64) -> Result<Vec<ObjectMetadata>, Error>;
+    fn list_objects(&self, offset: u64, limit: u64) -> Result<Vec<ObjectMetadata>, StorageError>;
 }
