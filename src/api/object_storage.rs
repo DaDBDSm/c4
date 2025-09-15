@@ -1,24 +1,12 @@
 use std::{
-    io::{self, Read},
+    io::Read,
     time::Instant,
 };
 
+use crate::api::errors::StorageError;
+
 pub type BucketName = String;
 pub type ObjectKey = String;
-
-pub enum StorageError {
-    IoError(io::Error),
-    BucketAlreadyExists(BucketName),
-    BucketNotFound(BucketName),
-    ObjectNotFound { bucket: BucketName, key: ObjectKey },
-    InvalidInput(String),
-    Internal(String),
-}
-
-pub enum SortingOrder {
-    ASC,
-    DESC,
-}
 
 pub struct ObjectMetadata {
     pub bucket_name: BucketName,
@@ -88,5 +76,5 @@ pub trait ObjectStorage {
 
     fn delete_object(&mut self, dto: &DeleteObjectDto) -> Result<(), StorageError>;
 
-    fn list_objects(&self, dto: &ListObjectsDto) -> Result<Vec<ObjectMetadata>, StorageError>;
+    fn list_objects(&self, bucket_name: &BucketName, offset: u64, limit: u64) -> Result<Vec<ObjectMetadata>, StorageError>;
 }

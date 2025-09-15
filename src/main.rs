@@ -2,7 +2,12 @@ use std::env;
 
 use log::{info, error, debug};
 
+<<<<<<< HEAD
 mod object_storage;
+=======
+mod api;
+mod storage;
+>>>>>>> 3c37709 (wip)
 
 fn main() {
     env_logger::Builder::new()
