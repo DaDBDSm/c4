@@ -3,8 +3,6 @@ use std::env;
 use log::{info, error, debug};
 
 mod object_storage;
-mod object_storage_simple;
-mod file;
 
 fn main() {
     env_logger::Builder::new()
