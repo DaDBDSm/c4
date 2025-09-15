@@ -79,7 +79,10 @@ pub trait ObjectStorage {
 
     fn put_object<R: Read>(&mut self, dto: &PutObjectDto) -> Result<ObjectMetadata, StorageError>;
 
-    fn get_object(&self, dto: &GetObjectDto) -> Result<Box<dyn Read>, StorageError>;
+    fn get_object(
+        &self,
+        dto: &GetObjectDto,
+    ) -> Result<(Box<dyn Read>, ObjectMetadata), StorageError>;
 
     fn head_object(&self, dto: &HeadObjectDto) -> Result<ObjectMetadata, StorageError>;
 
