@@ -15,11 +15,16 @@ pub enum StorageError {
     Internal(String),
 }
 
+pub enum SortingOrder {
+    ASC,
+    DESC,
+}
+
 pub struct ObjectMetadata {
     pub bucket_name: BucketName,
     pub key: ObjectKey,
     pub size: u64,
-    pub created: Instant,
+    pub created_at: Instant,
     pub etag: String,
 }
 
@@ -55,5 +60,11 @@ pub trait ObjectStorage {
         key: &ObjectKey,
     ) -> Result<(), StorageError>;
 
-    fn list_objects(&self, offset: u64, limit: u64) -> Result<Vec<ObjectMetadata>, StorageError>;
+    fn list_objects(
+        &self,
+        offset: u64,
+        limit: u64,
+        sorting_order: SortingOrder,
+        prefix: Option<&str>,
+    ) -> Result<Vec<ObjectMetadata>, StorageError>;
 }
