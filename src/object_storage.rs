@@ -62,6 +62,7 @@ pub trait ObjectStorage {
 
     fn list_objects(
         &self,
+        bucket_name: &BucketName,
         offset: u64,
         limit: u64,
         sorting_order: SortingOrder,
