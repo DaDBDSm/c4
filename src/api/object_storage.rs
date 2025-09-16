@@ -1,18 +1,20 @@
-use std::{
-    io::Read,
-    time::Instant,
-};
+use std::io::Read;
 
 use crate::api::errors::StorageError;
 
 pub type BucketName = String;
 pub type ObjectKey = String;
 
+pub enum SortingOrder {
+    ASC,
+    DESC,
+}
+
 pub struct ObjectMetadata {
     pub bucket_name: BucketName,
     pub key: ObjectKey,
     pub size: u64,
-    pub created_at: Instant,
+    pub created_at: i64,
     pub etag: String,
 }
 
@@ -65,7 +67,7 @@ pub trait ObjectStorage {
 
     fn list_buckets(&self, dto: &ListBucketsDto) -> Result<Vec<BucketName>, StorageError>;
 
-    fn put_object<R: Read>(&mut self, dto: &PutObjectDto) -> Result<ObjectMetadata, StorageError>;
+    fn put_object(&mut self, dto: &mut PutObjectDto) -> Result<ObjectMetadata, StorageError>;
 
     fn get_object(
         &self,
@@ -76,5 +78,5 @@ pub trait ObjectStorage {
 
     fn delete_object(&mut self, dto: &DeleteObjectDto) -> Result<(), StorageError>;
 
-    fn list_objects(&self, bucket_name: &BucketName, offset: u64, limit: u64) -> Result<Vec<ObjectMetadata>, StorageError>;
+    fn list_objects(&self, dto: &ListObjectsDto) -> Result<Vec<ObjectMetadata>, StorageError>;
 }

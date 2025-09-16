@@ -1,5 +1,8 @@
+use std::io;
+
 use crate::api::object_storage::{BucketName, ObjectKey};
 
+#[derive(Debug)]
 pub enum StorageError {
     IoError(io::Error),
     BucketAlreadyExists(BucketName),

@@ -1,17 +1,25 @@
 use std::{
-    fs::{create_dir, remove_dir},
-    io::{Cursor, Read},
-    path::PathBuf, time::{SystemTime, UNIX_EPOCH},
+    io::{Read, Seek},
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
     api::{
         errors::StorageError,
-        object_storage::{BucketName, ObjectKey, ObjectMetadata, ObjectStorage},
+        object_storage::{
+            BucketName, CreateBucketDto, DeleteBucketDto, DeleteObjectDto, GetObjectDto,
+            HeadObjectDto, ListBucketsDto, ListObjectsDto, ObjectKey, ObjectMetadata,
+            ObjectStorage, PutObjectDto,
+        },
     },
     storage::{
-        file::{create_file, delete_dir, delete_file, get_file, get_file_reader, list_dir},
-        model::{ObjectFileHeader, OBJECT_FILE_MAGIC},
+        file::{
+            compute_sha256_file_payload, create_dir, create_file, delete_dir, delete_file,
+            list_dir, open_file_checked,
+        },
+        model::{OBJECT_FILE_MAGIC, ObjectFileHeader},
+        utils::add_prefix_to_reader,
     },
 };
 
@@ -30,85 +38,196 @@ impl ObjectStorageSimple {
 }
 
 impl ObjectStorage for ObjectStorageSimple {
-    fn create_bucket(&mut self, bucket_name: &BucketName) -> Result<(), StorageError> {
-        create_dir(self.bucket_dir(bucket_name));
-        return Result::Ok(());
+    fn create_bucket(&mut self, dto: &CreateBucketDto) -> Result<(), StorageError> {
+        self.bucket_dir(&dto.bucket_name)
+            .to_str()
+            .ok_or_else(|| StorageError::InvalidInput("Invalid bucket name".to_string()))
+            .and_then(|bucket_dir| create_dir(bucket_dir).map_err(StorageError::IoError))?;
+        Ok(())
     }
 
-    fn delete_bucket(&mut self, bucket_name: &BucketName) -> Result<(), StorageError> {
-        remove_dir(self.bucket_dir(bucket_name));
-        Result::Ok(())
+    fn delete_bucket(&mut self, dto: &DeleteBucketDto) -> Result<(), StorageError> {
+        self.bucket_dir(&dto.bucket_name)
+            .to_str()
+            .ok_or_else(|| StorageError::InvalidInput("Invalid bucket name".to_string()))
+            .and_then(|bucket_dir| delete_dir(bucket_dir).map_err(StorageError::IoError))?;
+        Ok(())
     }
 
-    fn list_buckets(&self) -> Result<Vec<BucketName>, StorageError> {
-        Result::Ok(list_dir(self.base_dir.to_str().unwrap()).unwrap())
+    fn list_buckets(&self, dto: &ListBucketsDto) -> Result<Vec<BucketName>, StorageError> {
+        let mut buckets = self
+            .base_dir
+            .to_str()
+            .ok_or_else(|| StorageError::InvalidInput("Invalid base directory".to_string()))
+            .and_then(|base_dir| list_dir(base_dir).map_err(StorageError::IoError))?;
+        buckets.sort();
+        let start = dto.offset as usize;
+        let end = std::cmp::min(start.saturating_add(dto.limit as usize), buckets.len());
+        if start >= buckets.len() {
+            return Ok(Vec::new());
+        }
+        Ok(buckets[start..end].to_vec())
     }
 
-    fn put_object<R: std::io::Read>(
-        &mut self,
-        bucket_name: &BucketName,
-        key: &ObjectKey,
-        reader: &mut R,
-    ) -> Result<ObjectMetadata, StorageError> {
-        let create_ts = SystemTime::now()
+    fn put_object(&mut self, dto: &mut PutObjectDto) -> Result<ObjectMetadata, StorageError> {
+        let file_header = ObjectFileHeader {
+            magic: OBJECT_FILE_MAGIC,
+            create_timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_millis() as i64;
-
-        let file_header = ObjectFileHeader {
-            magic: OBJECT_FILE_MAGIC, 
-            create_timestamp: create_ts,
+                .as_millis() as i64,
         };
-
-        let mut reader_with_header = add_prefix_to_reader(&file_header.to_bytes(), reader);
-
-        create_file(&mut reader_with_header, self.object_path(bucket_name, key).to_str().unwrap());
-        
-        let result = ObjectMetadata {
-            bucket_name: bucket_name.to_string(),
-            key: key.to_string(),
-            size: todo!(),
-            created: todo!(),
-            etag: todo!(),
+        let header_bytes = file_header.to_bytes();
+        let mut reader_with_header = add_prefix_to_reader(&header_bytes, &mut dto.reader);
+        let file_size = self
+            .object_path(&dto.bucket_name, &dto.key)
+            .to_str()
+            .ok_or_else(|| StorageError::InvalidInput("Invalid bucket or object name".to_string()))
+            .and_then(|object_dir| {
+                create_file(&mut reader_with_header, object_dir).map_err(StorageError::IoError)
+            })?;
+        if file_size < ObjectFileHeader::SIZE as u64 {
+            return Err(StorageError::Internal(
+                "Written file smaller than header".to_string(),
+            ));
         }
 
-        return Result::Ok(result);
+        let etag = self
+            .object_path(&dto.bucket_name, &dto.key)
+            .to_str()
+            .ok_or_else(|| StorageError::InvalidInput("Invalid bucket or object name".to_string()))
+            .and_then(|path| {
+                compute_sha256_file_payload(path, ObjectFileHeader::SIZE)
+                    .map_err(StorageError::IoError)
+            })?;
+
+        let metadata = ObjectMetadata {
+            bucket_name: dto.bucket_name.clone(),
+            key: dto.key.clone(),
+            size: file_size - ObjectFileHeader::SIZE as u64,
+            created_at: file_header.create_timestamp,
+            etag,
+        };
+        Ok(metadata)
     }
 
     fn get_object(
         &self,
-        bucket_name: &BucketName,
-        key: &ObjectKey,
-    ) -> Result<Box<dyn std::io::Read>, StorageError> {
-        let path = self.object_path(bucket_name, key);
-        let path_str = path.to_str().unwrap();
-        let reader = get_file_reader(path_str).unwrap();
-    
-        Ok(Box::new(reader))
+        dto: &GetObjectDto,
+    ) -> Result<(Box<dyn Read>, ObjectMetadata), StorageError> {
+        let path_buf = self.object_path(&dto.bucket_name, &dto.key);
+        let path_str = path_buf.to_str().ok_or_else(|| {
+            StorageError::InvalidInput("Invalid bucket or object name".to_string())
+        })?;
+        let mut file_reader = open_file_checked(path_str).map_err(StorageError::IoError)?;
+
+        let mut file_header_bytes = [0u8; ObjectFileHeader::SIZE];
+        file_reader
+            .read_exact(&mut file_header_bytes)
+            .map_err(StorageError::IoError)?;
+        let file_header = ObjectFileHeader::from_bytes(&file_header_bytes);
+        if file_header.magic != OBJECT_FILE_MAGIC {
+            return Err(StorageError::Internal(
+                "Invalid object file magic".to_string(),
+            ));
+        }
+        let file_len = std::fs::metadata(path_str)
+            .map_err(StorageError::IoError)?
+            .len();
+        let payload_size = file_len.saturating_sub(ObjectFileHeader::SIZE as u64);
+
+        let etag = compute_sha256_file_payload(path_str, ObjectFileHeader::SIZE)
+            .map_err(StorageError::IoError)?;
+        let metadata = ObjectMetadata {
+            bucket_name: dto.bucket_name.clone(),
+            key: dto.key.clone(),
+            size: payload_size,
+            created_at: file_header.create_timestamp,
+            etag,
+        };
+        Ok((Box::new(file_reader), metadata))
     }
 
-    fn head_object(
-        &self,
-        bucket_name: &BucketName,
-        key: &ObjectKey,
-    ) -> Result<ObjectMetadata, StorageError> {
-        todo!()
+    fn head_object(&self, dto: &HeadObjectDto) -> Result<ObjectMetadata, StorageError> {
+        let get_dto = GetObjectDto {
+            bucket_name: dto.bucket_name.clone(),
+            key: dto.key.clone(),
+        };
+        self.get_object(&get_dto).map(|(_, metadata)| metadata)
     }
 
-    fn delete_object(
-        &mut self,
-        bucket_name: &BucketName,
-        key: &ObjectKey,
-    ) -> Result<(), StorageError> {
-        delete_file(self.object_path(bucket_name, key));
-        return Result::Ok(());
+    fn delete_object(&mut self, dto: &DeleteObjectDto) -> Result<(), StorageError> {
+        self.object_path(&dto.bucket_name, &dto.key)
+            .to_str()
+            .ok_or_else(|| StorageError::InvalidInput("Invalid bucket or object name".to_string()))
+            .and_then(|object_dir| delete_file(object_dir).map_err(StorageError::IoError))?;
+        Ok(())
     }
 
-    fn list_objects(&self, offset: u64, limit: u64) -> Result<Vec<ObjectMetadata>, StorageError> {
-        todo!()
-    }
-}
+    fn list_objects(&self, dto: &ListObjectsDto) -> Result<Vec<ObjectMetadata>, StorageError> {
+        use crate::api::object_storage::SortingOrder;
 
-fn add_prefix_to_reader<R: Read>(prefix: &[u8], reader: R) -> impl Read {
-    Cursor::new(prefix).chain(reader)
+        let bucket_dir = self
+            .bucket_dir(&dto.bucket_name)
+            .to_str()
+            .ok_or_else(|| StorageError::InvalidInput("Invalid bucket name".to_string()))
+            .map(|s| s.to_string())?;
+
+        let names = list_dir(&bucket_dir).map_err(StorageError::IoError)?;
+
+        let mut metas: Vec<ObjectMetadata> = Vec::new();
+        for name in names {
+            if let Some(prefix) = &dto.prefix {
+                if !name.starts_with(prefix) {
+                    continue;
+                }
+            }
+            let object_path = self
+                .object_path(&dto.bucket_name, &name)
+                .to_str()
+                .ok_or_else(|| StorageError::InvalidInput("Invalid object name".to_string()))
+                .map(|s| s.to_string())?;
+
+
+            let file_len = match std::fs::metadata(&object_path) {
+                Ok(m) => m.len(),
+                Err(e) => return Err(StorageError::IoError(e)),
+            };
+            if file_len < ObjectFileHeader::SIZE as u64 {
+                continue;
+            }
+
+            let mut reader = open_file_checked(&object_path).map_err(StorageError::IoError)?;
+            let mut header_bytes = [0u8; ObjectFileHeader::SIZE];
+            if let Err(e) = std::io::Read::read_exact(&mut reader, &mut header_bytes) {
+                return Err(StorageError::IoError(e));
+            }
+            let header = ObjectFileHeader::from_bytes(&header_bytes);
+            if header.magic != OBJECT_FILE_MAGIC {
+                continue;
+            }
+            let etag = compute_sha256_file_payload(&object_path, ObjectFileHeader::SIZE)
+                .map_err(StorageError::IoError)?;
+
+            metas.push(ObjectMetadata {
+                bucket_name: dto.bucket_name.clone(),
+                key: name,
+                size: file_len - ObjectFileHeader::SIZE as u64,
+                created_at: header.create_timestamp,
+                etag,
+            });
+        }
+
+        metas.sort_by(|a, b| match dto.sorting_order {
+            SortingOrder::ASC => a.key.cmp(&b.key),
+            SortingOrder::DESC => b.key.cmp(&a.key),
+        });
+
+        let start = dto.offset as usize;
+        if start >= metas.len() {
+            return Ok(Vec::new());
+        }
+        let limit = dto.limit as usize;
+        Ok(metas.into_iter().skip(start).take(limit).collect())
+    }
 }
