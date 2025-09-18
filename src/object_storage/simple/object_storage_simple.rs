@@ -1,26 +1,18 @@
 use std::{
-    io::{Read, Seek},
+    io::Read,
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::{
-    api::{
-        errors::StorageError,
-        object_storage::{
-            BucketName, CreateBucketDto, DeleteBucketDto, DeleteObjectDto, GetObjectDto,
-            HeadObjectDto, ListBucketsDto, ListObjectsDto, ObjectKey, ObjectMetadata,
-            ObjectStorage, PutObjectDto,
-        },
-    },
-    storage::{
-        file::{
-            compute_sha256_file_payload, create_dir, create_file, delete_dir, delete_file,
-            list_dir, open_file_checked,
-        },
-        model::{OBJECT_FILE_MAGIC, ObjectFileHeader},
-        utils::add_prefix_to_reader,
-    },
+use crate::object_storage::errors::StorageError;
+use crate::object_storage::simple::file::{
+    add_prefix_to_reader, compute_sha256_file_payload, create_dir, create_file, delete_dir,
+    delete_file, list_dir, open_file_checked,
+};
+use crate::object_storage::simple::model::{OBJECT_FILE_MAGIC, ObjectFileHeader};
+use crate::object_storage::{
+    BucketName, CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, GetObjectDTO, HeadObjectDTO,
+    ListBucketsDTO, ListObjectsDTO, ObjectKey, ObjectMetadata, ObjectStorage, SortingOrder,
 };
 
 pub struct ObjectStorageSimple {
@@ -38,7 +30,7 @@ impl ObjectStorageSimple {
 }
 
 impl ObjectStorage for ObjectStorageSimple {
-    fn create_bucket(&mut self, dto: &CreateBucketDto) -> Result<(), StorageError> {
+    fn create_bucket(&self, dto: &CreateBucketDTO) -> Result<(), StorageError> {
         self.bucket_dir(&dto.bucket_name)
             .to_str()
             .ok_or_else(|| StorageError::InvalidInput("Invalid bucket name".to_string()))
@@ -46,7 +38,7 @@ impl ObjectStorage for ObjectStorageSimple {
         Ok(())
     }
 
-    fn delete_bucket(&mut self, dto: &DeleteBucketDto) -> Result<(), StorageError> {
+    fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError> {
         self.bucket_dir(&dto.bucket_name)
             .to_str()
             .ok_or_else(|| StorageError::InvalidInput("Invalid bucket name".to_string()))
@@ -54,7 +46,7 @@ impl ObjectStorage for ObjectStorageSimple {
         Ok(())
     }
 
-    fn list_buckets(&self, dto: &ListBucketsDto) -> Result<Vec<BucketName>, StorageError> {
+    fn list_buckets(&self, dto: &ListBucketsDTO) -> Result<Vec<BucketName>, StorageError> {
         let mut buckets = self
             .base_dir
             .to_str()
@@ -69,10 +61,13 @@ impl ObjectStorage for ObjectStorageSimple {
         Ok(buckets[start..end].to_vec())
     }
 
-    fn put_object(&mut self, dto: &mut PutObjectDto) -> Result<ObjectMetadata, StorageError> {
+    fn put_object(
+        &self,
+        dto: &mut crate::object_storage::PutObjectDTO,
+    ) -> Result<ObjectMetadata, StorageError> {
         let file_header = ObjectFileHeader {
             magic: OBJECT_FILE_MAGIC,
-            create_timestamp: SystemTime::now()
+            created_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_millis() as i64,
@@ -105,7 +100,7 @@ impl ObjectStorage for ObjectStorageSimple {
             bucket_name: dto.bucket_name.clone(),
             key: dto.key.clone(),
             size: file_size - ObjectFileHeader::SIZE as u64,
-            created_at: file_header.create_timestamp,
+            created_at: file_header.created_at,
             etag,
         };
         Ok(metadata)
@@ -113,7 +108,7 @@ impl ObjectStorage for ObjectStorageSimple {
 
     fn get_object(
         &self,
-        dto: &GetObjectDto,
+        dto: &GetObjectDTO,
     ) -> Result<(Box<dyn Read>, ObjectMetadata), StorageError> {
         let path_buf = self.object_path(&dto.bucket_name, &dto.key);
         let path_str = path_buf.to_str().ok_or_else(|| {
@@ -142,21 +137,21 @@ impl ObjectStorage for ObjectStorageSimple {
             bucket_name: dto.bucket_name.clone(),
             key: dto.key.clone(),
             size: payload_size,
-            created_at: file_header.create_timestamp,
+            created_at: file_header.created_at,
             etag,
         };
         Ok((Box::new(file_reader), metadata))
     }
 
-    fn head_object(&self, dto: &HeadObjectDto) -> Result<ObjectMetadata, StorageError> {
-        let get_dto = GetObjectDto {
+    fn head_object(&self, dto: &HeadObjectDTO) -> Result<ObjectMetadata, StorageError> {
+        let get_dto = GetObjectDTO {
             bucket_name: dto.bucket_name.clone(),
             key: dto.key.clone(),
         };
         self.get_object(&get_dto).map(|(_, metadata)| metadata)
     }
 
-    fn delete_object(&mut self, dto: &DeleteObjectDto) -> Result<(), StorageError> {
+    fn delete_object(&self, dto: &DeleteObjectDTO) -> Result<(), StorageError> {
         self.object_path(&dto.bucket_name, &dto.key)
             .to_str()
             .ok_or_else(|| StorageError::InvalidInput("Invalid bucket or object name".to_string()))
@@ -164,9 +159,7 @@ impl ObjectStorage for ObjectStorageSimple {
         Ok(())
     }
 
-    fn list_objects(&self, dto: &ListObjectsDto) -> Result<Vec<ObjectMetadata>, StorageError> {
-        use crate::api::object_storage::SortingOrder;
-
+    fn list_objects(&self, dto: &ListObjectsDTO) -> Result<Vec<ObjectMetadata>, StorageError> {
         let bucket_dir = self
             .bucket_dir(&dto.bucket_name)
             .to_str()
@@ -187,7 +180,6 @@ impl ObjectStorage for ObjectStorageSimple {
                 .to_str()
                 .ok_or_else(|| StorageError::InvalidInput("Invalid object name".to_string()))
                 .map(|s| s.to_string())?;
-
 
             let file_len = match std::fs::metadata(&object_path) {
                 Ok(m) => m.len(),
@@ -213,7 +205,7 @@ impl ObjectStorage for ObjectStorageSimple {
                 bucket_name: dto.bucket_name.clone(),
                 key: name,
                 size: file_len - ObjectFileHeader::SIZE as u64,
-                created_at: header.create_timestamp,
+                created_at: header.created_at,
                 etag,
             });
         }

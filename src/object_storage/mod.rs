@@ -1,6 +1,9 @@
+pub mod errors;
+pub mod simple;
+
 use std::io::Read;
 
-use crate::api::errors::StorageError;
+use crate::object_storage::errors::StorageError;
 
 pub type BucketName = String;
 pub type ObjectKey = String;
@@ -18,41 +21,41 @@ pub struct ObjectMetadata {
     pub etag: String,
 }
 
-pub struct CreateBucketDto {
+pub struct CreateBucketDTO {
     pub bucket_name: BucketName,
 }
 
-pub struct DeleteBucketDto {
+pub struct DeleteBucketDTO {
     pub bucket_name: BucketName,
 }
 
-pub struct ListBucketsDto {
+pub struct ListBucketsDTO {
     pub offset: u64,
     pub limit: u64,
 }
 
-pub struct PutObjectDto {
+pub struct PutObjectDTO {
     pub bucket_name: BucketName,
     pub key: ObjectKey,
     pub reader: Box<dyn Read>,
 }
 
-pub struct GetObjectDto {
+pub struct GetObjectDTO {
     pub bucket_name: BucketName,
     pub key: ObjectKey,
 }
 
-pub struct HeadObjectDto {
+pub struct HeadObjectDTO {
     pub bucket_name: BucketName,
     pub key: ObjectKey,
 }
 
-pub struct DeleteObjectDto {
+pub struct DeleteObjectDTO {
     pub bucket_name: BucketName,
     pub key: ObjectKey,
 }
 
-pub struct ListObjectsDto {
+pub struct ListObjectsDTO {
     pub bucket_name: BucketName,
     pub offset: u64,
     pub limit: u64,
@@ -61,22 +64,22 @@ pub struct ListObjectsDto {
 }
 
 pub trait ObjectStorage {
-    fn create_bucket(&mut self, dto: &CreateBucketDto) -> Result<(), StorageError>;
+    fn create_bucket(&self, dto: &CreateBucketDTO) -> Result<(), StorageError>;
 
-    fn delete_bucket(&mut self, dto: &DeleteBucketDto) -> Result<(), StorageError>;
+    fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError>;
 
-    fn list_buckets(&self, dto: &ListBucketsDto) -> Result<Vec<BucketName>, StorageError>;
+    fn list_buckets(&self, dto: &ListBucketsDTO) -> Result<Vec<BucketName>, StorageError>;
 
-    fn put_object(&mut self, dto: &mut PutObjectDto) -> Result<ObjectMetadata, StorageError>;
+    fn put_object(&self, dto: &mut PutObjectDTO) -> Result<ObjectMetadata, StorageError>;
 
     fn get_object(
         &self,
-        dto: &GetObjectDto,
+        dto: &GetObjectDTO,
     ) -> Result<(Box<dyn Read>, ObjectMetadata), StorageError>;
 
-    fn head_object(&self, dto: &HeadObjectDto) -> Result<ObjectMetadata, StorageError>;
+    fn head_object(&self, dto: &HeadObjectDTO) -> Result<ObjectMetadata, StorageError>;
 
-    fn delete_object(&mut self, dto: &DeleteObjectDto) -> Result<(), StorageError>;
+    fn delete_object(&self, dto: &DeleteObjectDTO) -> Result<(), StorageError>;
 
-    fn list_objects(&self, dto: &ListObjectsDto) -> Result<Vec<ObjectMetadata>, StorageError>;
+    fn list_objects(&self, dto: &ListObjectsDTO) -> Result<Vec<ObjectMetadata>, StorageError>;
 }

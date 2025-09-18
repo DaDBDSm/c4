@@ -1,10 +1,12 @@
+use sha2::{Digest, Sha256};
+use std::io::Cursor;
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
     path::Path,
 };
-use sha2::{Digest, Sha256};
 
+// TODO: set from config
 const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
 const BUFFER_SIZE: usize = 8192;
 
@@ -24,8 +26,8 @@ pub fn create_file<R: Read>(reader: &mut R, path: &str) -> io::Result<u64> {
             drop(file);
             let _ = fs::remove_file(path);
             return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "File exceeds maximum allowed size",
+                io::ErrorKind::FileTooLarge,
+                format!("File exceeds maximum allowed size ({MAX_FILE_SIZE} bytes)"),
             ));
         }
 
@@ -81,7 +83,9 @@ pub fn compute_sha256_reader<R: Read>(mut reader: R) -> io::Result<String> {
     let mut buffer = [0u8; BUFFER_SIZE];
     loop {
         let n = reader.read(&mut buffer)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         hasher.update(&buffer[..n]);
     }
     let digest = hasher.finalize();
@@ -94,4 +98,8 @@ pub fn compute_sha256_file_payload(path: &str, header_size: usize) -> io::Result
     let mut file = open_file_checked(path)?;
     file.seek(SeekFrom::Start(header_size as u64))?;
     compute_sha256_reader(&mut file)
+}
+
+pub fn add_prefix_to_reader<R: Read>(prefix: &[u8], reader: R) -> impl Read {
+    Cursor::new(prefix).chain(reader)
 }

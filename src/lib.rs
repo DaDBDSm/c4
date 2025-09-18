@@ -1,3 +1,1 @@
-pub mod api;
-pub mod storage;
-
+pub mod object_storage;
