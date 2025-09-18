@@ -1,8 +1,13 @@
 [package]
-name = "roodb"
+name = "c4"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 env_logger = "0.11.8"
 log = "0.4.28"
+sha2 = "0.10"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3.22.0"
