@@ -1,6 +1,7 @@
 use std::io::Cursor;
 use tempfile::TempDir;
 
+use c4::object_storage::simple::file::FileManager;
 use c4::object_storage::simple::object_storage_simple::ObjectStorageSimple;
 use c4::object_storage::{
     CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, GetObjectDTO, HeadObjectDTO, ListBucketsDTO,
@@ -11,6 +12,7 @@ fn create_test_storage() -> (ObjectStorageSimple, TempDir) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let storage = ObjectStorageSimple {
         base_dir: temp_dir.path().to_path_buf(),
+        file_manager: FileManager::new(10 * 1024 * 1024, 1024),
     };
     (storage, temp_dir)
 }
