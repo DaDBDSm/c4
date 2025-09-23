@@ -1,4 +1,3 @@
-use fs2::FileExt;
 use sha2::{Digest, Sha256};
 use std::io::ErrorKind::AlreadyExists;
 use std::io::{Cursor, Seek, SeekFrom};
@@ -22,8 +21,8 @@ impl FileManager {
     }
 
     pub fn create_file<R: Read>(&self, reader: &mut R, path: &str) -> io::Result<u64> {
-        let mut _file_locker = FileLocker::new(File::create(path)?);
-        _file_locker.lock()?;
+        let mut file = File::create(path)?;
+        file.lock()?;
 
         let mut buffer = vec![0u8; self.buffer_size_bytes];
         let mut total_written: u64 = 0;
@@ -45,15 +44,16 @@ impl FileManager {
                 ));
             }
 
-            _file_locker.file.write_all(&buffer[..n])?;
+            file.write_all(&buffer[..n])?;
         }
+
         Ok(total_written)
     }
 
     pub fn delete_file(&self, path: &str) -> io::Result<()> {
         if Path::new(path).exists() {
-            let mut _file_locker = FileLocker::new(File::options().write(true).open(path)?);
-            _file_locker.lock()?;
+            let file = File::options().write(true).open(path)?;
+            file.lock()?;
             fs::remove_file(path)?;
         }
         Ok(())
@@ -69,8 +69,8 @@ impl FileManager {
 
     pub fn delete_dir(&self, path: &str) -> io::Result<()> {
         if Path::new(path).exists() {
-            let mut _file_locker = FileLocker::new(File::open(path)?);
-            _file_locker.lock()?;
+            let file = File::open(path)?;
+            file.lock()?;
             fs::remove_dir_all(path)?;
         }
         Ok(())
@@ -88,6 +88,7 @@ impl FileManager {
 
     pub fn open_file_checked(&self, path: &str) -> io::Result<File> {
         let file = File::open(path)?;
+        file.lock_shared();
         let metadata = file.metadata()?;
         if metadata.len() > self.max_file_size_bytes {
             return Err(io::Error::new(
@@ -124,38 +125,5 @@ impl FileManager {
 
     pub fn add_prefix_to_reader<R: Read>(&self, prefix: &[u8], reader: R) -> impl Read {
         Cursor::new(prefix).chain(reader)
-    }
-}
-
-struct FileLocker {
-    file: File,
-    locked: bool,
-}
-
-impl FileLocker {
-    fn new(file: File) -> Self {
-        FileLocker {
-            file,
-            locked: false,
-        }
-    }
-
-    fn lock(&mut self) -> io::Result<()> {
-        self.file.lock_exclusive()?;
-        self.locked = true;
-        Ok(())
-    }
-
-    fn unlock_file(&mut self) {
-        _ = self.file.unlock();
-        self.locked = false;
-    }
-}
-
-impl Drop for FileLocker {
-    fn drop(&mut self) {
-        if self.locked {
-            self.unlock_file();
-        };
     }
 }
