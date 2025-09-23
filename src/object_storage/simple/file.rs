@@ -46,7 +46,6 @@ impl FileManager {
 
             file.write_all(&buffer[..n])?;
         }
-
         Ok(total_written)
     }
 

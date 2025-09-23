@@ -1,6 +1,4 @@
 use std::io::Cursor;
-use std::{fs, thread};
-use std::time::Duration;
 use tempfile::TempDir;
 
 use c4::object_storage::errors::StorageError;
