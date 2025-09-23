@@ -1,4 +1,6 @@
 use std::io::Cursor;
+use std::{fs, thread};
+use std::time::Duration;
 use tempfile::TempDir;
 
 use c4::object_storage::errors::StorageError;
@@ -10,7 +12,7 @@ use c4::object_storage::{
 };
 
 fn create_test_storage() -> (ObjectStorageSimple, TempDir) {
-    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let temp_dir: TempDir = TempDir::new().expect("Failed to create temp dir");
     let storage = ObjectStorageSimple {
         base_dir: temp_dir.path().to_path_buf(),
         file_manager: FileManager::new(10 * 1024 * 1024, 1024),

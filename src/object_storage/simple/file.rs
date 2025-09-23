@@ -69,8 +69,6 @@ impl FileManager {
 
     pub fn delete_dir(&self, path: &str) -> io::Result<()> {
         if Path::new(path).exists() {
-            let file = File::open(path)?;
-            file.lock()?;
             fs::remove_dir_all(path)?;
         }
         Ok(())
@@ -88,7 +86,7 @@ impl FileManager {
 
     pub fn open_file_checked(&self, path: &str) -> io::Result<File> {
         let file = File::open(path)?;
-        file.lock_shared();
+        file.lock_shared()?;
         let metadata = file.metadata()?;
         if metadata.len() > self.max_file_size_bytes {
             return Err(io::Error::new(
