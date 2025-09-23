@@ -1,5 +1,5 @@
+use fs2::FileExt;
 use sha2::{Digest, Sha256};
-use std::io::ErrorKind::AlreadyExists;
 use std::io::{Cursor, Seek, SeekFrom};
 use std::{
     fs::{self, File},
@@ -21,10 +21,8 @@ impl FileManager {
     }
 
     pub fn create_file<R: Read>(&self, reader: &mut R, path: &str) -> io::Result<u64> {
-        let mut _file_locker = FileLocker::new(path);
+        let mut _file_locker = FileLocker::new(File::create(path)?);
         _file_locker.lock()?;
-
-        let mut file = File::create(path)?;
 
         let mut buffer = vec![0u8; self.buffer_size_bytes];
         let mut total_written: u64 = 0;
@@ -36,8 +34,7 @@ impl FileManager {
             total_written += n as u64;
 
             if total_written > self.max_file_size_bytes {
-                drop(file);
-                let _ = fs::remove_file(path);
+                _ = fs::remove_file(path);
                 return Err(io::Error::new(
                     io::ErrorKind::FileTooLarge,
                     format!(
@@ -47,34 +44,29 @@ impl FileManager {
                 ));
             }
 
-            file.write_all(&buffer[..n])?;
+            _file_locker.file.write_all(&buffer[..n])?;
         }
         Ok(total_written)
     }
 
     pub fn delete_file(&self, path: &str) -> io::Result<()> {
-        let mut _file_locker = FileLocker::new(path);
-        _file_locker.lock()?;
-
         if Path::new(path).exists() {
+            let mut _file_locker = FileLocker::new(File::options().write(true).open(path)?);
+            _file_locker.lock()?;
             fs::remove_file(path)?;
         }
         Ok(())
     }
 
     pub fn create_dir(&self, path: &str) -> io::Result<()> {
-        let mut _file_locker = FileLocker::new(path);
-        _file_locker.lock()?;
-
         fs::create_dir_all(path)?;
         Ok(())
     }
 
     pub fn delete_dir(&self, path: &str) -> io::Result<()> {
-        let mut _file_locker = FileLocker::new(path);
-        _file_locker.lock()?;
-
         if Path::new(path).exists() {
+            let mut _file_locker = FileLocker::new(File::open(path)?);
+            _file_locker.lock()?;
             fs::remove_dir_all(path)?;
         }
         Ok(())
@@ -132,39 +124,34 @@ impl FileManager {
 }
 
 struct FileLocker {
-    lock_path: String,
+    file: File,
     locked: bool,
 }
 
 impl FileLocker {
-    fn new(path: &str) -> Self {
+    fn new(file: File) -> Self {
         FileLocker {
-            lock_path: format!("{}.lock", path),
+            file,
             locked: false,
         }
     }
 
     fn lock(&mut self) -> io::Result<()> {
-        while match File::create_new(&self.lock_path) {
-            Ok(_) => false,
-            Err(e) if e.kind() == AlreadyExists => true,
-            Err(e) => return Err(e),
-        } {}
+        self.file.lock_exclusive()?;
         self.locked = true;
         Ok(())
     }
 
-    fn unlock_file(&mut self) -> io::Result<()> {
-        fs::remove_file(&self.lock_path)?;
+    fn unlock_file(&mut self) {
+        _ = self.file.unlock();
         self.locked = false;
-        Ok(())
     }
 }
 
 impl Drop for FileLocker {
     fn drop(&mut self) {
         if self.locked {
-            let _ = self.unlock_file();
+            self.unlock_file();
         };
     }
 }
