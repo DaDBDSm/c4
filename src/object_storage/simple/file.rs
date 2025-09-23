@@ -1,5 +1,6 @@
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
+use std::io::ErrorKind::AlreadyExists;
 use std::io::{Cursor, Seek, SeekFrom};
 use std::{
     fs::{self, File},
@@ -59,6 +60,9 @@ impl FileManager {
     }
 
     pub fn create_dir(&self, path: &str) -> io::Result<()> {
+        if Path::new(path).exists() {
+            return Err(io::Error::new(AlreadyExists, "Directory already exists"));
+        }
         fs::create_dir_all(path)?;
         Ok(())
     }

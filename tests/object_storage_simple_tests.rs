@@ -1,6 +1,7 @@
 use std::io::Cursor;
 use tempfile::TempDir;
 
+use c4::object_storage::errors::StorageError;
 use c4::object_storage::simple::file::FileManager;
 use c4::object_storage::simple::object_storage_simple::ObjectStorageSimple;
 use c4::object_storage::{
@@ -34,6 +35,17 @@ fn test_create_and_list_buckets() {
             bucket_name: bucket2.clone(),
         })
         .expect("Failed to create bucket 2");
+    match storage.create_bucket(&CreateBucketDTO {
+        bucket_name: bucket2.clone(),
+    }) {
+        Err(StorageError::BucketAlreadyExists { .. }) => {}
+        Err(other) => panic!(
+            "expected {}, got: {:?}",
+            stringify!(StorageError::BucketAlreadyExists),
+            other
+        ),
+        Ok(_) => panic!("expected error, got Ok"),
+    };
 
     let buckets = storage
         .list_buckets(&ListBucketsDTO {
@@ -41,10 +53,20 @@ fn test_create_and_list_buckets() {
             limit: 10,
         })
         .expect("Failed to list buckets");
-
     assert_eq!(buckets.len(), 2);
     assert!(buckets.contains(&bucket1));
     assert!(buckets.contains(&bucket2));
+
+    storage
+        .delete_bucket(&DeleteBucketDTO {
+            bucket_name: bucket1.clone(),
+        })
+        .expect("Failed to delete bucket");
+    storage
+        .delete_bucket(&DeleteBucketDTO {
+            bucket_name: bucket2.clone(),
+        })
+        .expect("Failed to delete bucket");
 }
 
 #[test]
@@ -52,6 +74,8 @@ fn test_delete_bucket() {
     let (storage, _temp_dir) = create_test_storage();
 
     let bucket_name = "test-bucket".to_string();
+    let object_key = "test-object.txt".to_string();
+    let reader: Cursor<&[u8]> = Cursor::new(b"test_data");
 
     storage
         .create_bucket(&CreateBucketDTO {
@@ -59,12 +83,22 @@ fn test_delete_bucket() {
         })
         .expect("Failed to create bucket");
 
+    let mut put_dto = PutObjectDTO {
+        bucket_name: bucket_name.clone(),
+        key: object_key.clone(),
+        reader: Box::new(reader),
+    };
+    storage
+        .put_object(&mut put_dto)
+        .expect("Failed to put object");
+
     let buckets = storage
         .list_buckets(&ListBucketsDTO {
             offset: 0,
             limit: 10,
         })
         .expect("Failed to list buckets");
+    assert_eq!(buckets.len(), 1);
     assert!(buckets.contains(&bucket_name));
 
     storage
@@ -79,7 +113,23 @@ fn test_delete_bucket() {
             limit: 10,
         })
         .expect("Failed to list buckets");
-    assert!(!buckets.contains(&bucket_name));
+    assert_eq!(buckets.len(), 0);
+
+    match storage.list_objects(&ListObjectsDTO {
+        bucket_name: bucket_name.clone(),
+        offset: 0,
+        limit: 10,
+        sorting_order: SortingOrder::ASC,
+        prefix: None,
+    }) {
+        Err(StorageError::BucketNotFound { .. }) => {}
+        Err(other) => panic!(
+            "expected {}, got: {:?}",
+            stringify!(StorageError::BucketNotFound),
+            other
+        ),
+        Ok(_) => panic!("expected error, got Ok"),
+    };
 }
 
 #[test]
@@ -105,7 +155,15 @@ fn test_put_and_get_object() {
     let metadata = storage
         .put_object(&mut put_dto)
         .expect("Failed to put object");
+    assert_eq!(metadata.bucket_name, bucket_name);
+    assert_eq!(metadata.key, object_key);
+    assert_eq!(metadata.size, test_data.len() as u64);
 
+    let reader: Cursor<&[u8]> = Cursor::new(test_data);
+    put_dto.reader = Box::new(reader);
+    let metadata = storage
+        .put_object(&mut put_dto)
+        .expect("Failed to put object");
     assert_eq!(metadata.bucket_name, bucket_name);
     assert_eq!(metadata.key, object_key);
     assert_eq!(metadata.size, test_data.len() as u64);
@@ -116,7 +174,6 @@ fn test_put_and_get_object() {
             key: object_key.clone(),
         })
         .expect("Failed to get object");
-
     assert_eq!(get_metadata.bucket_name, bucket_name);
     assert_eq!(get_metadata.key, object_key);
     assert_eq!(get_metadata.size, test_data.len() as u64);
@@ -126,6 +183,12 @@ fn test_put_and_get_object() {
         .read_to_end(&mut read_data)
         .expect("Failed to read object data");
     assert_eq!(read_data, test_data);
+
+    storage
+        .delete_bucket(&DeleteBucketDTO {
+            bucket_name: bucket_name.clone(),
+        })
+        .expect("Failed to delete bucket");
 }
 
 #[test]
@@ -158,10 +221,15 @@ fn test_head_object() {
             key: object_key.clone(),
         })
         .expect("Failed to head object");
-
     assert_eq!(metadata.bucket_name, bucket_name);
     assert_eq!(metadata.key, object_key);
     assert_eq!(metadata.size, test_data.len() as u64);
+
+    storage
+        .delete_bucket(&DeleteBucketDTO {
+            bucket_name: bucket_name.clone(),
+        })
+        .expect("Failed to delete bucket");
 }
 
 #[test]
@@ -189,24 +257,30 @@ fn test_delete_object() {
         .expect("Failed to put object");
 
     storage
-        .head_object(&HeadObjectDTO {
-            bucket_name: bucket_name.clone(),
-            key: object_key.clone(),
-        })
-        .expect("Object should exist");
-
-    storage
         .delete_object(&DeleteObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
         .expect("Failed to delete object");
 
-    let result = storage.head_object(&HeadObjectDTO {
+    match storage.head_object(&HeadObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
-    });
-    assert!(result.is_err());
+    }) {
+        Err(StorageError::ObjectNotFound { .. }) => {}
+        Err(other) => panic!(
+            "expected {}, got: {:?}",
+            stringify!(StorageError::ObjectNotFound),
+            other
+        ),
+        Ok(_) => panic!("expected error, got Ok"),
+    };
+
+    storage
+        .delete_bucket(&DeleteBucketDTO {
+            bucket_name: bucket_name.clone(),
+        })
+        .expect("Failed to delete bucket");
 }
 
 #[test]
@@ -244,8 +318,9 @@ fn test_list_objects() {
             prefix: None,
         })
         .expect("Failed to list objects");
-
     assert_eq!(objects.len(), 3);
+    assert!(objects[0].key < objects[1].key);
+    assert!(objects[1].key < objects[2].key);
 
     let prefixed_objects = storage
         .list_objects(&ListObjectsDTO {
@@ -256,7 +331,6 @@ fn test_list_objects() {
             prefix: Some("prefix".to_string()),
         })
         .expect("Failed to list prefixed objects");
-
     assert_eq!(prefixed_objects.len(), 1);
     assert_eq!(prefixed_objects[0].key, "prefix_object.txt");
 
@@ -269,7 +343,6 @@ fn test_list_objects() {
             prefix: None,
         })
         .expect("Failed to list first page");
-
     assert_eq!(first_page.len(), 2);
 
     let second_page = storage
@@ -281,7 +354,6 @@ fn test_list_objects() {
             prefix: None,
         })
         .expect("Failed to list second page");
-
     assert_eq!(second_page.len(), 1);
 
     let desc_objects = storage
@@ -293,10 +365,15 @@ fn test_list_objects() {
             prefix: None,
         })
         .expect("Failed to list objects in DESC order");
-
     assert_eq!(desc_objects.len(), 3);
     assert!(desc_objects[0].key > desc_objects[1].key);
     assert!(desc_objects[1].key > desc_objects[2].key);
+
+    storage
+        .delete_bucket(&DeleteBucketDTO {
+            bucket_name: bucket_name.clone(),
+        })
+        .expect("Failed to delete bucket");
 }
 
 #[test]
@@ -335,6 +412,14 @@ fn test_bucket_pagination() {
         })
         .expect("Failed to list empty page");
     assert_eq!(empty_page.len(), 0);
+
+    for bucket_name in &bucket_names {
+        storage
+            .delete_bucket(&DeleteBucketDTO {
+                bucket_name: bucket_name.to_string(),
+            })
+            .expect("Failed to delete bucket");
+    }
 }
 
 #[test]
@@ -344,7 +429,7 @@ fn test_large_object() {
     let bucket_name = "test-bucket".to_string();
     let object_key = "large-object.bin".to_string();
 
-    let large_data = vec![0u8; 1024 * 1024];
+    let large_data = vec![77u8; 1024 * 1024];
 
     storage
         .create_bucket(&CreateBucketDTO {
@@ -361,21 +446,29 @@ fn test_large_object() {
     let metadata = storage
         .put_object(&mut put_dto)
         .expect("Failed to put large object");
-
     assert_eq!(metadata.size, large_data.len() as u64);
 
-    let (mut reader, _) = storage
+    let (mut reader, metadata) = storage
         .get_object(&GetObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
         .expect("Failed to get large object");
+    assert_eq!(metadata.key, object_key);
+    assert_eq!(metadata.bucket_name, bucket_name);
+    assert_eq!(metadata.size, large_data.len().try_into().unwrap());
 
     let mut read_data = Vec::new();
     reader
         .read_to_end(&mut read_data)
         .expect("Failed to read large object");
     assert_eq!(read_data.len(), large_data.len());
+
+    storage
+        .delete_bucket(&DeleteBucketDTO {
+            bucket_name: bucket_name.clone(),
+        })
+        .expect("Failed to delete bucket");
 }
 
 #[test]
@@ -401,7 +494,6 @@ fn test_empty_object() {
     let metadata = storage
         .put_object(&mut put_dto)
         .expect("Failed to put empty object");
-
     assert_eq!(metadata.size, 0);
 
     let (mut reader, _) = storage
@@ -416,6 +508,12 @@ fn test_empty_object() {
         .read_to_end(&mut read_data)
         .expect("Failed to read empty object");
     assert_eq!(read_data.len(), 0);
+
+    storage
+        .delete_bucket(&DeleteBucketDTO {
+            bucket_name: bucket_name.clone(),
+        })
+        .expect("Failed to delete bucket");
 }
 
 #[test]
@@ -425,26 +523,47 @@ fn test_nonexistent_bucket_operations() {
     let bucket_name = "nonexistent-bucket".to_string();
     let object_key = "test-object.txt".to_string();
 
-    let result = storage.list_objects(&ListObjectsDTO {
+    match storage.list_objects(&ListObjectsDTO {
         bucket_name: bucket_name.clone(),
         offset: 0,
         limit: 10,
         sorting_order: SortingOrder::ASC,
         prefix: None,
-    });
-    assert!(result.is_err());
+    }) {
+        Err(StorageError::BucketNotFound { .. }) => {}
+        Err(other) => panic!(
+            "expected {}, got: {:?}",
+            stringify!(StorageError::BucketNotFound),
+            other
+        ),
+        Ok(_) => panic!("expected error, got Ok"),
+    };
 
-    let result = storage.get_object(&GetObjectDTO {
+    match storage.get_object(&GetObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
-    });
-    assert!(result.is_err());
+    }) {
+        Err(StorageError::BucketNotFound { .. }) => {}
+        Err(other) => panic!(
+            "expected {}, got: {:?}",
+            stringify!(StorageError::BucketNotFound),
+            other
+        ),
+        Ok(_) => panic!("expected error, got Ok"),
+    };
 
-    let result = storage.head_object(&HeadObjectDTO {
+    match storage.head_object(&HeadObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
-    });
-    assert!(result.is_err());
+    }) {
+        Err(StorageError::BucketNotFound { .. }) => {}
+        Err(other) => panic!(
+            "expected {}, got: {:?}",
+            stringify!(StorageError::BucketNotFound),
+            other
+        ),
+        Ok(_) => panic!("expected error, got Ok"),
+    };
 }
 
 #[test]
@@ -460,17 +579,31 @@ fn test_nonexistent_object_operations() {
         })
         .expect("Failed to create bucket");
 
-    let result = storage.get_object(&GetObjectDTO {
+    match storage.get_object(&GetObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
-    });
-    assert!(result.is_err());
+    }) {
+        Err(StorageError::ObjectNotFound { .. }) => {}
+        Err(other) => panic!(
+            "expected {}, got: {:?}",
+            stringify!(StorageError::ObjectNotFound),
+            other
+        ),
+        Ok(_) => panic!("expected error, got Ok"),
+    };
 
-    let result = storage.head_object(&HeadObjectDTO {
+    match storage.head_object(&HeadObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
-    });
-    assert!(result.is_err());
+    }) {
+        Err(StorageError::ObjectNotFound { .. }) => {}
+        Err(other) => panic!(
+            "expected {}, got: {:?}",
+            stringify!(StorageError::ObjectNotFound),
+            other
+        ),
+        Ok(_) => panic!("expected error, got Ok"),
+    };
 
     storage
         .delete_object(&DeleteObjectDTO {
@@ -478,4 +611,10 @@ fn test_nonexistent_object_operations() {
             key: object_key.clone(),
         })
         .expect("Delete nonexistent object should not error");
+
+    storage
+        .delete_bucket(&DeleteBucketDTO {
+            bucket_name: bucket_name.clone(),
+        })
+        .expect("Failed to delete bucket");
 }
