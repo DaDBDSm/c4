@@ -1,0 +1,7 @@
+syntax = "proto3";
+
+package object_storage;
+
+message Hello {
+  string hello = 1;
+}
