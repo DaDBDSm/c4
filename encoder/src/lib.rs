@@ -1,6 +1,5 @@
 use std::io::{Cursor, Read};
 
-const MAX_FIELDS_COUNT: u32 = 100000;
 const MAX_STRING_LENGTH: u64 = 1024 * 1024 * 1024;
 const MAX_LIST_LENGTH: u32 = 10_000_000;
 
@@ -223,10 +222,6 @@ pub fn decode_value(cursor: &mut Cursor<&[u8]>) -> Result<Value, DecodeError> {
             read_exact_or_error(cursor, &mut count_buf, "field count")?;
             let count = u32::from_be_bytes(count_buf);
 
-            if count > MAX_FIELDS_COUNT {
-                return Err(DecodeError::InvalidFieldCount);
-            }
-
             let mut fields = Vec::with_capacity(count as usize);
             for _ in 0..count {
                 let mut num_buf = [0; 4];
@@ -268,7 +263,10 @@ pub fn decode_value(cursor: &mut Cursor<&[u8]>) -> Result<Value, DecodeError> {
     }
 }
 
-fn decode_value_without_type(cursor: &mut Cursor<&[u8]>, type_id: u8) -> Result<Value, DecodeError> {
+fn decode_value_without_type(
+    cursor: &mut Cursor<&[u8]>,
+    type_id: u8,
+) -> Result<Value, DecodeError> {
     match type_id {
         Value::INT32_ID => {
             let mut buf = [0; 4];
