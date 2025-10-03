@@ -1,27 +1,53 @@
-pub const OBJECT_FILE_MAGIC: u32 = 0xABCA;
+use std::io::Cursor;
+
+use encoder::{Field, Value};
+
+pub const OBJECT_FILE_MAGIC: i32 = 0xABCA;
 
 pub struct ObjectFileHeader {
-    pub magic: u32,
+    pub magic: i32,
     pub created_at: i64,
 }
 
 impl ObjectFileHeader {
-    pub const SIZE: usize = 12;
+    pub const SIZE: usize = 27;
 
-    pub fn to_bytes(&self) -> [u8; Self::SIZE] {
-        let mut result = [0u8; Self::SIZE];
-
-        result[0..4].copy_from_slice(&self.magic.to_le_bytes());
-
-        result[4..12].copy_from_slice(&self.created_at.to_le_bytes());
-
-        result
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let header_value = Value::Message(vec![
+            Field {
+                number: 1,
+                value: Value::Int32(self.magic)
+            },
+            Field {
+                number: 2,
+                value: Value::Int64(self.created_at)
+            }
+        ]);
+        let bytes = encoder::encode_value(&header_value).expect("Encoding error");
+        return bytes;
     }
 
-    pub fn from_bytes(bytes: &[u8; Self::SIZE]) -> Self {
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let mut cursor = Cursor::new(bytes);
+        let decoded = encoder::decode_value(&mut cursor).expect("Decoding error");
+        let Value::Message(fields) = decoded else {
+            panic!("Decoding error")
+        };
+        let magic_field = fields.get(0).expect("Invalid magic field");
+
+        let Value::Int32(magic_value) = magic_field.value else {
+            panic!("Decoding error")
+        };
+ 
+        let created_at_field = fields.get(1).expect("Invalid created_at field");
+
+        let Value::Int64(created_at_value) = created_at_field.value else {
+            panic!("Decoding error")
+        };
+ 
         Self {
-            magic: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
-            created_at: i64::from_le_bytes(bytes[4..12].try_into().unwrap()),
+            magic: magic_value,
+            created_at: created_at_value,
         }
     }
 }
