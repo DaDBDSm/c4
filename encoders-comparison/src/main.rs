@@ -58,6 +58,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let tweet_c4_encoded = encode_tweet_data_c4(&tweet_c4)?;
         let tweet_c4_time = tweet_c4_start.elapsed();
 
+        println!(
+            "\nEncoded chat messages proto: {} bytes",
+            chat_proto_encoded.len()
+        );
+        println!(
+            "Encoded trade messages proto: {} bytes",
+            trade_proto_encoded.len()
+        );
+        println!(
+            "Encoded tweet messages proto: {} bytes",
+            tweet_proto_encoded.len()
+        );
+
+        println!(
+            "\nEncoded chat messages c4: {} bytes",
+            chat_c4_encoded.len()
+        );
+        println!(
+            "Encoded trade messages c4: {} bytes",
+            trade_c4_encoded.len()
+        );
+        println!(
+            "Encoded tweet messages c4: {} bytes\n",
+            tweet_c4_encoded.len()
+        );
+
         println!("Decoding benchmark for {} rows...", row_count);
 
         let chat_proto_decode_start = Instant::now();
