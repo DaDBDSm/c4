@@ -10,7 +10,7 @@ fn test_encoder() {
         },
         Field {
             number: 2,
-            value: Value::String("hello".to_string())
+            value: Value::String("hello2".to_string())
         }
     ];
     let inner_message = Value::Message(inner_message_fields);

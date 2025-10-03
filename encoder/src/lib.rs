@@ -55,7 +55,8 @@ pub fn encode_value(value: &Value) -> Vec<u8> {
         Value::Bool(b) => out.extend_from_slice(&bool_to_be_bytes(*b)),
         Value::String(s) => {
             let bytes = s.as_bytes();
-            out.extend_from_slice(&bytes.len().to_be_bytes());
+            let string_length = bytes.len() as u64;
+            out.extend_from_slice(&string_length.to_be_bytes());
             out.extend_from_slice(&bytes);
         }
         Value::Message(fields) => {
@@ -103,9 +104,9 @@ pub fn decode_value(cursor: &mut Cursor<&[u8]>) -> Value {
             Some(Value::Bool(bool_from_be_bytes(value_bytes)))
         }
         Value::STRING_ID => {
-            let mut length_bytes: [u8; 4] = [0; 4];
+            let mut length_bytes: [u8; 8] = [0; 8];
             cursor.read_exact(&mut length_bytes).unwrap();
-            let length = u32::from_be_bytes(length_bytes);
+            let length = u64::from_be_bytes(length_bytes);
 
             let mut string_bytes = vec![0; length as usize];
             cursor.read_exact(&mut string_bytes).unwrap();
