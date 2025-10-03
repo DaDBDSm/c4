@@ -1,10 +1,10 @@
 use std::io::Cursor;
 use tempfile::TempDir;
 
-use c4::object_storage::errors::StorageError;
-use c4::object_storage::simple::file::FileManager;
-use c4::object_storage::simple::object_storage_simple::ObjectStorageSimple;
-use c4::object_storage::{
+use db::object_storage::errors::StorageError;
+use db::object_storage::simple::file::FileManager;
+use db::object_storage::simple::object_storage_simple::ObjectStorageSimple;
+use db::object_storage::{
     CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, GetObjectDTO, HeadObjectDTO, ListBucketsDTO,
     ListObjectsDTO, ObjectStorage, PutObjectDTO, SortingOrder,
 };
