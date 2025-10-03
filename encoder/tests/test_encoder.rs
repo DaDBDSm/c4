@@ -1,4 +1,4 @@
-use {encoder::{decode_value, encode_value, Field, Value}};
+use encoder::{Field, Value, decode_value, encode_value};
 use std::io::Cursor;
 
 #[test]
@@ -6,32 +6,32 @@ fn test_encoder() {
     let inner_message_fields = vec![
         Field {
             number: 1,
-            value: Value::Int32(1)
+            value: Value::Int32(1),
         },
         Field {
             number: 2,
-            value: Value::String("hello2".to_string())
-        }
+            value: Value::String("hello2".to_string()),
+        },
     ];
     let inner_message = Value::Message(inner_message_fields);
     let value = Value::Message(vec![
         Field {
             number: 1,
-            value: Value::Int32(42)
+            value: Value::Int32(42),
         },
         Field {
             number: 2,
-            value: Value::String("hello".to_string())
+            value: Value::String("hello".to_string()),
         },
         Field {
             number: 3,
-            value: inner_message
-        }
+            value: inner_message,
+        },
     ]);
 
     let bytes = encode_value(&value);
 
-    let decoded = decode_value(&mut Cursor::new(&bytes));
+    let decoded = decode_value(&mut Cursor::new(&bytes)).unwrap();
 
     assert_eq!(decoded.type_id(), Value::MESSAGE_ID);
     let Value::Message(fields) = decoded else {
