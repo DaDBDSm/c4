@@ -1,4 +1,4 @@
-use encoder::{Field, Value, decode_value, encode_value};
+use encoder::{Field, Value, decode_value, encode_value, EncodeError};
 use std::io::Cursor;
 
 #[test]
@@ -29,8 +29,7 @@ fn test_encoder() {
         },
     ]);
 
-    let bytes = encode_value(&value);
-
+    let bytes = encode_value(&value).unwrap();
     let decoded = decode_value(&mut Cursor::new(&bytes)).unwrap();
 
     assert_eq!(decoded.type_id(), Value::MESSAGE_ID);
@@ -44,4 +43,48 @@ fn test_encoder() {
         panic!("Invalid field")
     };
     assert_eq!(i, 42);
+}
+
+#[test]
+fn test_empty_list() {
+    let value = Value::List(vec![]);
+    let bytes = encode_value(&value).unwrap();
+    let decoded = decode_value(&mut Cursor::new(&bytes)).unwrap();
+
+    assert_eq!(decoded, value);
+}
+
+#[test]
+fn test_list_of_ints() {
+    let value = Value::List(vec![
+        Value::Int32(10),
+        Value::Int32(20),
+        Value::Int32(30),
+    ]);
+    let bytes = encode_value(&value).unwrap();
+    let decoded = decode_value(&mut Cursor::new(&bytes)).unwrap();
+
+    assert_eq!(decoded, value);
+}
+
+#[test]
+fn test_list_of_strings() {
+    let value = Value::List(vec![
+        Value::String("foo".to_string()),
+        Value::String("bar".to_string()),
+    ]);
+    let bytes = encode_value(&value).unwrap();
+    let decoded = decode_value(&mut Cursor::new(&bytes)).unwrap();
+
+    assert_eq!(decoded, value);
+}
+
+#[test]
+fn test_heterogeneous_list_rejected() {
+    let value = Value::List(vec![
+        Value::Int32(1),
+        Value::String("oops".to_string()),
+    ]);
+    let result = encode_value(&value);
+    assert!(matches!(result, Err(EncodeError::ListTypeMismatch)));
 }
