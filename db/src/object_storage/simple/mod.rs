@@ -1,3 +1,3 @@
 pub mod file;
-mod model;
+mod meta;
 pub mod object_storage_simple;

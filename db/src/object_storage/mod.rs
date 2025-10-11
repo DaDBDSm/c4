@@ -18,7 +18,6 @@ pub struct ObjectMetadata {
     pub key: ObjectKey,
     pub size: u64,
     pub created_at: i64,
-    pub etag: String,
 }
 
 pub struct CreateBucketDTO {
@@ -57,8 +56,8 @@ pub struct DeleteObjectDTO {
 
 pub struct ListObjectsDTO {
     pub bucket_name: BucketName,
-    pub offset: u64,
     pub limit: u64,
+    pub offset: u64,
     pub sorting_order: SortingOrder,
     pub prefix: Option<String>,
 }
@@ -72,10 +71,7 @@ pub trait ObjectStorage {
 
     fn put_object(&self, dto: &mut PutObjectDTO) -> Result<ObjectMetadata, StorageError>;
 
-    fn get_object(
-        &self,
-        dto: &GetObjectDTO,
-    ) -> Result<(Box<dyn Read>, ObjectMetadata), StorageError>;
+    fn get_object(&self, dto: &GetObjectDTO) -> Result<Box<dyn Read>, StorageError>;
 
     fn head_object(&self, dto: &HeadObjectDTO) -> Result<ObjectMetadata, StorageError>;
 

@@ -122,10 +122,10 @@ fn test_delete_bucket() {
         sorting_order: SortingOrder::ASC,
         prefix: None,
     }) {
-        Err(StorageError::BucketNotFound { .. }) => {}
+        Err(StorageError::IoError { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
-            stringify!(StorageError::BucketNotFound),
+            stringify!(StorageError::IoError),
             other
         ),
         Ok(_) => panic!("expected error, got Ok"),
@@ -168,15 +168,12 @@ fn test_put_and_get_object() {
     assert_eq!(metadata.key, object_key);
     assert_eq!(metadata.size, test_data.len() as u64);
 
-    let (mut reader, get_metadata) = storage
+    let mut reader = storage
         .get_object(&GetObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
         .expect("Failed to get object");
-    assert_eq!(get_metadata.bucket_name, bucket_name);
-    assert_eq!(get_metadata.key, object_key);
-    assert_eq!(get_metadata.size, test_data.len() as u64);
 
     let mut read_data = Vec::new();
     reader
@@ -447,16 +444,16 @@ fn test_large_object() {
         .put_object(&mut put_dto)
         .expect("Failed to put large object");
     assert_eq!(metadata.size, large_data.len() as u64);
+    assert_eq!(metadata.key, object_key);
+    assert_eq!(metadata.bucket_name, bucket_name);
+    assert_eq!(metadata.size, large_data.len().try_into().unwrap());
 
-    let (mut reader, metadata) = storage
+    let mut reader = storage
         .get_object(&GetObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
         .expect("Failed to get large object");
-    assert_eq!(metadata.key, object_key);
-    assert_eq!(metadata.bucket_name, bucket_name);
-    assert_eq!(metadata.size, large_data.len().try_into().unwrap());
 
     let mut read_data = Vec::new();
     reader
@@ -496,7 +493,7 @@ fn test_empty_object() {
         .expect("Failed to put empty object");
     assert_eq!(metadata.size, 0);
 
-    let (mut reader, _) = storage
+    let mut reader = storage
         .get_object(&GetObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
@@ -530,10 +527,10 @@ fn test_nonexistent_bucket_operations() {
         sorting_order: SortingOrder::ASC,
         prefix: None,
     }) {
-        Err(StorageError::BucketNotFound { .. }) => {}
+        Err(StorageError::IoError { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
-            stringify!(StorageError::BucketNotFound),
+            stringify!(StorageError::IoError),
             other
         ),
         Ok(_) => panic!("expected error, got Ok"),
@@ -543,10 +540,10 @@ fn test_nonexistent_bucket_operations() {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
     }) {
-        Err(StorageError::BucketNotFound { .. }) => {}
+        Err(StorageError::ObjectNotFound { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
-            stringify!(StorageError::BucketNotFound),
+            stringify!(StorageError::ObjectNotFound),
             other
         ),
         Ok(_) => panic!("expected error, got Ok"),
@@ -556,10 +553,10 @@ fn test_nonexistent_bucket_operations() {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
     }) {
-        Err(StorageError::BucketNotFound { .. }) => {}
+        Err(StorageError::ObjectNotFound { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
-            stringify!(StorageError::BucketNotFound),
+            stringify!(StorageError::ObjectNotFound),
             other
         ),
         Ok(_) => panic!("expected error, got Ok"),

@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package object_storage;
+
+import "google/protobuf/empty.proto";
+
+service C4 {
+  rpc CreateBucket(CreateBucketRequest) returns (google.protobuf.Empty) {}
+  rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse) {}
+  rpc DeleteBucket(DeleteBucketRequest) returns (google.protobuf.Empty) {}
+
+  rpc PutObject(stream PutObjectRequest) returns (PutObjectResponse) {}
+  rpc GetObject(GetObjectRequest) returns (stream ObjectPart) {}
+  rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse) {}
+  rpc DeleteObject(DeleteObjectRequest) returns (google.protobuf.Empty) {}
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse) {}
+}
+
+message CreateBucketRequest {
+  string bucket_name = 1;
+}
+
+message ListBucketsRequest {
+  uint64 limit = 1;
+  uint64 offset = 2;
+}
+
+message ListBucketsResponse {
+  repeated string bucket_name = 1;
+}
+
+message DeleteBucketRequest {
+  string bucket_name = 1;
+}
+
+message PutObjectRequest {
+  string bucket_name = 1;
+  string object_key = 2;
+  ObjectPart object_part = 3;
+}
+
+message PutObjectResponse {
+  ObjectMetadata metadata = 1;
+}
+
+message GetObjectRequest {
+  string bucket_name = 1;
+  string object_key = 2;
+}
+
+message HeadObjectRequest {
+  string bucket_name = 1;
+  string object_key = 2;
+}
+
+message HeadObjectResponse {
+  ObjectMetadata metadata = 1;
+}
+
+message DeleteObjectRequest {
+  string bucket_name = 1;
+  string object_key = 2;
+}
+
+message ListObjectsRequest {
+  string bucket_name = 1;
+  optional string limit = 2;
+  optional string offset = 3;
+  optional string sorting_order = 4;
+  optional string prefix = 5;
+}
+
+message ListObjectsResponse {
+  repeated ObjectMetadata metadata = 1;
+}
+
+message ObjectPart {
+  bytes part = 1;
+}
+
+message ObjectMetadata {
+  string bucket_name = 1;
+  string object_key = 2;
+  uint64 size = 3;
+  int64 created_at = 4;
+}

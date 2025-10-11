@@ -1,6 +1,5 @@
-use sha2::{Digest, Sha256};
+use std::io::Cursor;
 use std::io::ErrorKind::AlreadyExists;
-use std::io::{Cursor, Seek, SeekFrom};
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
@@ -94,30 +93,6 @@ impl FileManager {
             ));
         }
         Ok(file)
-    }
-
-    pub fn compute_sha256_reader<R: Read>(&self, mut reader: R) -> io::Result<String> {
-        let mut hasher = Sha256::new();
-        let mut buffer = vec![0u8; self.buffer_size_bytes];
-        loop {
-            let n = reader.read(&mut buffer)?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buffer[..n]);
-        }
-        let digest = hasher.finalize();
-        Ok(hex::encode(digest))
-    }
-
-    pub fn compute_sha256_file_payload(
-        &self,
-        path: &str,
-        header_size: usize,
-    ) -> io::Result<String> {
-        let mut file = self.open_file_checked(path)?;
-        file.seek(SeekFrom::Start(header_size as u64))?;
-        self.compute_sha256_reader(&mut file)
     }
 
     pub fn add_prefix_to_reader<R: Read>(&self, prefix: &[u8], reader: R) -> impl Read {
