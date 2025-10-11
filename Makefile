@@ -1,5 +1,5 @@
 run:
-	cargo run
+	cargo run --bin db
 
 build:
 	cargo build
