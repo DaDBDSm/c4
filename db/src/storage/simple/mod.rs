@@ -1,7 +1,10 @@
-use crate::object_storage::errors::StorageError;
-use crate::object_storage::simple::file::FileManager;
-use crate::object_storage::simple::meta::{OBJECT_MAGIC, ObjectHeader};
-use crate::object_storage::{
+pub mod file;
+mod meta;
+
+use crate::storage::errors::StorageError;
+use crate::storage::simple::file::FileManager;
+use crate::storage::simple::meta::{OBJECT_MAGIC, ObjectHeader};
+use crate::storage::{
     BucketName, CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, GetObjectDTO, HeadObjectDTO,
     ListBucketsDTO, ListObjectsDTO, ObjectKey, ObjectMetadata, ObjectStorage, SortingOrder,
 };
@@ -11,6 +14,8 @@ use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+const DEFAULT_LIMIT: u64 = 20;
 
 pub struct ObjectStorageSimple {
     pub base_dir: PathBuf,
@@ -103,12 +108,6 @@ impl ObjectStorage for ObjectStorageSimple {
         }
     }
 
-    fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError> {
-        self.file_manager
-            .delete_dir(&self.bucket_dir(&dto.bucket_name)?)
-            .map_err(StorageError::IoError)
-    }
-
     fn list_buckets(&self, dto: &ListBucketsDTO) -> Result<Vec<BucketName>, StorageError> {
         let mut buckets = self
             .file_manager
@@ -116,17 +115,26 @@ impl ObjectStorage for ObjectStorageSimple {
             .map_err(StorageError::IoError)?;
 
         buckets.sort();
-        let start = dto.offset as usize;
-        let end = std::cmp::min(start.saturating_add(dto.limit as usize), buckets.len());
+        let start = dto.offset.unwrap_or(DEFAULT_LIMIT) as usize;
+        let end = std::cmp::min(
+            start.saturating_add(dto.limit.unwrap_or(0) as usize),
+            buckets.len(),
+        );
         if start >= buckets.len() {
             return Ok(Vec::new());
         }
         Ok(buckets[start..end].to_vec())
     }
 
+    fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError> {
+        self.file_manager
+            .delete_dir(&self.bucket_dir(&dto.bucket_name)?)
+            .map_err(StorageError::IoError)
+    }
+
     fn put_object(
         &self,
-        dto: &mut crate::object_storage::PutObjectDTO,
+        dto: &mut crate::storage::PutObjectDTO,
     ) -> Result<ObjectMetadata, StorageError> {
         let object_path = self.object_path(&dto.bucket_name, &dto.key)?;
 
@@ -168,23 +176,13 @@ impl ObjectStorage for ObjectStorageSimple {
         Ok(self.get_object_reader(&dto.bucket_name, &dto.key)?.0)
     }
 
-    fn head_object(&self, dto: &HeadObjectDTO) -> Result<ObjectMetadata, StorageError> {
-        Ok(self.get_object_reader(&dto.bucket_name, &dto.key)?.1)
-    }
-
-    fn delete_object(&self, dto: &DeleteObjectDTO) -> Result<(), StorageError> {
-        self.file_manager
-            .delete_file(&self.object_path(&dto.bucket_name, &dto.key)?)
-            .map_err(StorageError::IoError)
-    }
-
     fn list_objects(&self, dto: &ListObjectsDTO) -> Result<Vec<ObjectMetadata>, StorageError> {
         let object_keys = self
             .file_manager
             .list_dir(&self.bucket_dir(&dto.bucket_name)?)
             .map_err(StorageError::IoError)?;
 
-        if dto.offset as usize >= object_keys.len() {
+        if dto.offset.unwrap_or(0) as usize >= object_keys.len() {
             return Ok(Vec::new());
         }
 
@@ -199,15 +197,27 @@ impl ObjectStorage for ObjectStorageSimple {
             metas.push(self.get_object_reader(&dto.bucket_name, &object_key)?.1);
         }
 
-        metas.sort_by(|a, b| match dto.sorting_order {
-            SortingOrder::ASC => a.key.cmp(&b.key),
-            SortingOrder::DESC => b.key.cmp(&a.key),
-        });
+        metas.sort_by(
+            |a, b| match dto.sorting_order.as_ref().unwrap_or(&SortingOrder::DESC) {
+                SortingOrder::ASC => a.key.cmp(&b.key),
+                SortingOrder::DESC => b.key.cmp(&a.key),
+            },
+        );
 
         Ok(metas
             .into_iter()
-            .skip(dto.offset as usize)
-            .take(dto.limit as usize)
+            .skip(dto.offset.unwrap_or(0) as usize)
+            .take(dto.limit.unwrap_or(DEFAULT_LIMIT) as usize)
             .collect())
+    }
+
+    fn head_object(&self, dto: &HeadObjectDTO) -> Result<ObjectMetadata, StorageError> {
+        Ok(self.get_object_reader(&dto.bucket_name, &dto.key)?.1)
+    }
+
+    fn delete_object(&self, dto: &DeleteObjectDTO) -> Result<(), StorageError> {
+        self.file_manager
+            .delete_file(&self.object_path(&dto.bucket_name, &dto.key)?)
+            .map_err(StorageError::IoError)
     }
 }

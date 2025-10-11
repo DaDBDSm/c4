@@ -3,7 +3,7 @@ pub mod simple;
 
 use std::io::Read;
 
-use crate::object_storage::errors::StorageError;
+use crate::storage::errors::StorageError;
 
 pub type BucketName = String;
 pub type ObjectKey = String;
@@ -11,6 +11,16 @@ pub type ObjectKey = String;
 pub enum SortingOrder {
     ASC,
     DESC,
+}
+
+impl SortingOrder {
+    pub fn new_option(sorting: Option<&String>) -> Option<SortingOrder> {
+        match sorting.unwrap_or(&"".to_string()).to_uppercase().as_str() {
+            "ASC" => Some(SortingOrder::ASC),
+            "DESC" => Some(SortingOrder::DESC),
+            _ => None,
+        }
+    }
 }
 
 pub struct ObjectMetadata {
@@ -29,8 +39,8 @@ pub struct DeleteBucketDTO {
 }
 
 pub struct ListBucketsDTO {
-    pub offset: u64,
-    pub limit: u64,
+    pub offset: Option<u64>,
+    pub limit: Option<u64>,
 }
 
 pub struct PutObjectDTO {
@@ -56,26 +66,26 @@ pub struct DeleteObjectDTO {
 
 pub struct ListObjectsDTO {
     pub bucket_name: BucketName,
-    pub limit: u64,
-    pub offset: u64,
-    pub sorting_order: SortingOrder,
+    pub limit: Option<u64>,
+    pub offset: Option<u64>,
+    pub sorting_order: Option<SortingOrder>,
     pub prefix: Option<String>,
 }
 
 pub trait ObjectStorage {
     fn create_bucket(&self, dto: &CreateBucketDTO) -> Result<(), StorageError>;
 
-    fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError>;
-
     fn list_buckets(&self, dto: &ListBucketsDTO) -> Result<Vec<BucketName>, StorageError>;
+
+    fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError>;
 
     fn put_object(&self, dto: &mut PutObjectDTO) -> Result<ObjectMetadata, StorageError>;
 
     fn get_object(&self, dto: &GetObjectDTO) -> Result<Box<dyn Read>, StorageError>;
 
+    fn list_objects(&self, dto: &ListObjectsDTO) -> Result<Vec<ObjectMetadata>, StorageError>;
+
     fn head_object(&self, dto: &HeadObjectDTO) -> Result<ObjectMetadata, StorageError>;
 
     fn delete_object(&self, dto: &DeleteObjectDTO) -> Result<(), StorageError>;
-
-    fn list_objects(&self, dto: &ListObjectsDTO) -> Result<Vec<ObjectMetadata>, StorageError>;
 }

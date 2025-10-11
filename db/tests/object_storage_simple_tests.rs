@@ -1,10 +1,10 @@
 use std::io::Cursor;
 use tempfile::TempDir;
 
-use db::object_storage::errors::StorageError;
-use db::object_storage::simple::file::FileManager;
-use db::object_storage::simple::object_storage_simple::ObjectStorageSimple;
-use db::object_storage::{
+use db::storage::errors::StorageError;
+use db::storage::simple::ObjectStorageSimple;
+use db::storage::simple::file::FileManager;
+use db::storage::{
     CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, GetObjectDTO, HeadObjectDTO, ListBucketsDTO,
     ListObjectsDTO, ObjectStorage, PutObjectDTO, SortingOrder,
 };
@@ -49,8 +49,8 @@ fn test_create_and_list_buckets() {
 
     let buckets = storage
         .list_buckets(&ListBucketsDTO {
-            offset: 0,
-            limit: 10,
+            offset: Some(0),
+            limit: Some(10),
         })
         .expect("Failed to list buckets");
     assert_eq!(buckets.len(), 2);
@@ -94,8 +94,8 @@ fn test_delete_bucket() {
 
     let buckets = storage
         .list_buckets(&ListBucketsDTO {
-            offset: 0,
-            limit: 10,
+            offset: Some(0),
+            limit: Some(10),
         })
         .expect("Failed to list buckets");
     assert_eq!(buckets.len(), 1);
@@ -109,17 +109,17 @@ fn test_delete_bucket() {
 
     let buckets = storage
         .list_buckets(&ListBucketsDTO {
-            offset: 0,
-            limit: 10,
+            offset: Some(0),
+            limit: Some(10),
         })
         .expect("Failed to list buckets");
     assert_eq!(buckets.len(), 0);
 
     match storage.list_objects(&ListObjectsDTO {
         bucket_name: bucket_name.clone(),
-        offset: 0,
-        limit: 10,
-        sorting_order: SortingOrder::ASC,
+        offset: Some(0),
+        limit: Some(10),
+        sorting_order: Some(SortingOrder::ASC),
         prefix: None,
     }) {
         Err(StorageError::IoError { .. }) => {}
@@ -309,9 +309,9 @@ fn test_list_objects() {
     let objects = storage
         .list_objects(&ListObjectsDTO {
             bucket_name: bucket_name.clone(),
-            offset: 0,
-            limit: 10,
-            sorting_order: SortingOrder::ASC,
+            offset: Some(0),
+            limit: Some(10),
+            sorting_order: Some(SortingOrder::ASC),
             prefix: None,
         })
         .expect("Failed to list objects");
@@ -322,9 +322,9 @@ fn test_list_objects() {
     let prefixed_objects = storage
         .list_objects(&ListObjectsDTO {
             bucket_name: bucket_name.clone(),
-            offset: 0,
-            limit: 10,
-            sorting_order: SortingOrder::ASC,
+            offset: Some(0),
+            limit: Some(10),
+            sorting_order: Some(SortingOrder::ASC),
             prefix: Some("prefix".to_string()),
         })
         .expect("Failed to list prefixed objects");
@@ -334,9 +334,9 @@ fn test_list_objects() {
     let first_page = storage
         .list_objects(&ListObjectsDTO {
             bucket_name: bucket_name.clone(),
-            offset: 0,
-            limit: 2,
-            sorting_order: SortingOrder::ASC,
+            offset: Some(0),
+            limit: Some(2),
+            sorting_order: Some(SortingOrder::ASC),
             prefix: None,
         })
         .expect("Failed to list first page");
@@ -345,9 +345,9 @@ fn test_list_objects() {
     let second_page = storage
         .list_objects(&ListObjectsDTO {
             bucket_name: bucket_name.clone(),
-            offset: 2,
-            limit: 2,
-            sorting_order: SortingOrder::ASC,
+            offset: Some(2),
+            limit: Some(2),
+            sorting_order: Some(SortingOrder::ASC),
             prefix: None,
         })
         .expect("Failed to list second page");
@@ -356,9 +356,9 @@ fn test_list_objects() {
     let desc_objects = storage
         .list_objects(&ListObjectsDTO {
             bucket_name: bucket_name.clone(),
-            offset: 0,
-            limit: 10,
-            sorting_order: SortingOrder::DESC,
+            offset: Some(0),
+            limit: Some(10),
+            sorting_order: Some(SortingOrder::DESC),
             prefix: None,
         })
         .expect("Failed to list objects in DESC order");
@@ -388,24 +388,24 @@ fn test_bucket_pagination() {
 
     let first_page = storage
         .list_buckets(&ListBucketsDTO {
-            offset: 0,
-            limit: 2,
+            offset: Some(0),
+            limit: Some(2),
         })
         .expect("Failed to list first page");
     assert_eq!(first_page.len(), 2);
 
     let second_page = storage
         .list_buckets(&ListBucketsDTO {
-            offset: 2,
-            limit: 2,
+            offset: Some(2),
+            limit: Some(2),
         })
         .expect("Failed to list second page");
     assert_eq!(second_page.len(), 1);
 
     let empty_page = storage
         .list_buckets(&ListBucketsDTO {
-            offset: 10,
-            limit: 5,
+            offset: Some(10),
+            limit: Some(5),
         })
         .expect("Failed to list empty page");
     assert_eq!(empty_page.len(), 0);
@@ -522,9 +522,9 @@ fn test_nonexistent_bucket_operations() {
 
     match storage.list_objects(&ListObjectsDTO {
         bucket_name: bucket_name.clone(),
-        offset: 0,
-        limit: 10,
-        sorting_order: SortingOrder::ASC,
+        offset: Some(0),
+        limit: Some(10),
+        sorting_order: Some(SortingOrder::ASC),
         prefix: None,
     }) {
         Err(StorageError::IoError { .. }) => {}
