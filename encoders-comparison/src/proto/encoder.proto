@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package encoder;
+
+message ChatDataMessage {
+  int64 match_id = 1;
+  string key = 2;
+  int64 slot = 3;
+  int64 time = 4;
+  string unit = 5;
+}
+
+message ChatsData {
+  repeated ChatDataMessage data = 1;
+}
+
+message TradeDataMessage {
+  string timestamp = 1;
+  double open = 2;
+  double high = 3;
+  double low = 4;
+  double close = 5;
+  double volume = 6;
+}
+
+message TradeData {
+  repeated TradeDataMessage data = 1;
+}
+
+message TweetDataMessage {
+  string id = 1;
+  string user = 2;
+  string fullname = 3;
+  string url = 4;
+  string timestamp = 5;
+  int64 replies = 6;
+  int64 likes = 7;
+  int64 retweets = 8;
+  string text = 9;
+}
+
+message TweetData {
+  repeated TweetDataMessage data = 1;
+}
