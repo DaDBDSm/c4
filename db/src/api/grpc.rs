@@ -25,9 +25,13 @@ impl C4 for C4Handler {
         &self,
         request: Request<CreateBucketRequest>,
     ) -> Result<Response<()>, Status> {
-        match self.c4_storage.create_bucket(&CreateBucketDTO {
-            bucket_name: request.get_ref().bucket_name.clone(),
-        }) {
+        match self
+            .c4_storage
+            .create_bucket(&CreateBucketDTO {
+                bucket_name: request.get_ref().bucket_name.clone(),
+            })
+            .await
+        {
             Err(e) => match e {
                 StorageError::InvalidInput(msg) => Err(Status::invalid_argument(msg)),
                 StorageError::IoError(_) => Err(Status::internal("internal io error")),
@@ -42,10 +46,14 @@ impl C4 for C4Handler {
         &self,
         request: Request<ListBucketsRequest>,
     ) -> Result<Response<ListBucketsResponse>, Status> {
-        match self.c4_storage.list_buckets(&ListBucketsDTO {
-            limit: request.get_ref().limit,
-            offset: request.get_ref().offset,
-        }) {
+        match self
+            .c4_storage
+            .list_buckets(&ListBucketsDTO {
+                limit: request.get_ref().limit,
+                offset: request.get_ref().offset,
+            })
+            .await
+        {
             Err(e) => match e {
                 StorageError::InvalidInput(msg) => Err(Status::invalid_argument(msg)),
                 StorageError::IoError(_) => Err(Status::internal("internal io error")),
@@ -61,9 +69,13 @@ impl C4 for C4Handler {
         &self,
         request: Request<DeleteBucketRequest>,
     ) -> Result<Response<()>, Status> {
-        match self.c4_storage.delete_bucket(&DeleteBucketDTO {
-            bucket_name: request.get_ref().bucket_name.clone(),
-        }) {
+        match self
+            .c4_storage
+            .delete_bucket(&DeleteBucketDTO {
+                bucket_name: request.get_ref().bucket_name.clone(),
+            })
+            .await
+        {
             Err(e) => match e {
                 StorageError::InvalidInput(msg) => Err(Status::invalid_argument(msg)),
                 StorageError::IoError(_) => Err(Status::internal("internal io error")),
@@ -184,13 +196,17 @@ impl C4 for C4Handler {
         &self,
         request: Request<ListObjectsRequest>,
     ) -> Result<Response<ListObjectsResponse>, Status> {
-        match self.c4_storage.list_objects(&ListObjectsDTO {
-            bucket_name: request.get_ref().bucket_name.clone(),
-            limit: request.get_ref().limit,
-            offset: request.get_ref().offset,
-            sorting_order: SortingOrder::new_option(request.get_ref().sorting_order.as_ref()),
-            prefix: request.get_ref().prefix.clone(),
-        }) {
+        match self
+            .c4_storage
+            .list_objects(&ListObjectsDTO {
+                bucket_name: request.get_ref().bucket_name.clone(),
+                limit: request.get_ref().limit,
+                offset: request.get_ref().offset,
+                sorting_order: SortingOrder::new_option(request.get_ref().sorting_order.as_ref()),
+                prefix: request.get_ref().prefix.clone(),
+            })
+            .await
+        {
             Err(e) => match e {
                 StorageError::ObjectNotFound { bucket, key } => {
                     Err(Status::not_found(format!("not found {bucket}/{key}")))
@@ -226,10 +242,14 @@ impl C4 for C4Handler {
             Some(id) => id,
         };
 
-        match self.c4_storage.head_object(&HeadObjectDTO {
-            bucket_name: object_id.bucket_name.clone(),
-            key: object_id.object_key.clone(),
-        }) {
+        match self
+            .c4_storage
+            .head_object(&HeadObjectDTO {
+                bucket_name: object_id.bucket_name.clone(),
+                key: object_id.object_key.clone(),
+            })
+            .await
+        {
             Err(e) => match e {
                 StorageError::ObjectNotFound { bucket, key } => {
                     Err(Status::not_found(format!("not found {bucket}/{key}")))
@@ -262,10 +282,14 @@ impl C4 for C4Handler {
             Some(id) => id,
         };
 
-        match self.c4_storage.delete_object(&DeleteObjectDTO {
-            bucket_name: object_id.bucket_name.clone(),
-            key: object_id.object_key.clone(),
-        }) {
+        match self
+            .c4_storage
+            .delete_object(&DeleteObjectDTO {
+                bucket_name: object_id.bucket_name.clone(),
+                key: object_id.object_key.clone(),
+            })
+            .await
+        {
             Err(e) => match e {
                 StorageError::InvalidInput(msg) => Err(Status::invalid_argument(msg)),
                 StorageError::IoError(_) => Err(Status::internal("internal io error")),

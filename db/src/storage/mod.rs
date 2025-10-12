@@ -1,7 +1,6 @@
 pub mod errors;
 pub mod simple;
-
-use std::io::Read;
+use tokio::io::AsyncRead;
 
 use crate::storage::errors::StorageError;
 
@@ -46,7 +45,7 @@ pub struct ListBucketsDTO {
 pub struct PutObjectDTO {
     pub bucket_name: BucketName,
     pub key: ObjectKey,
-    pub reader: Box<dyn Read>,
+    pub reader: Box<dyn AsyncRead + Unpin>,
 }
 
 pub struct GetObjectDTO {
@@ -73,19 +72,20 @@ pub struct ListObjectsDTO {
 }
 
 pub trait ObjectStorage {
-    fn create_bucket(&self, dto: &CreateBucketDTO) -> Result<(), StorageError>;
+    async fn create_bucket(&self, dto: &CreateBucketDTO) -> Result<(), StorageError>;
 
-    fn list_buckets(&self, dto: &ListBucketsDTO) -> Result<Vec<BucketName>, StorageError>;
+    async fn list_buckets(&self, dto: &ListBucketsDTO) -> Result<Vec<BucketName>, StorageError>;
 
-    fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError>;
+    async fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError>;
 
-    fn put_object(&self, dto: &mut PutObjectDTO) -> Result<ObjectMetadata, StorageError>;
+    async fn put_object(&self, dto: &mut PutObjectDTO) -> Result<ObjectMetadata, StorageError>;
 
-    fn get_object(&self, dto: &GetObjectDTO) -> Result<Box<dyn Read>, StorageError>;
+    async fn get_object(&self, dto: &GetObjectDTO) -> Result<Box<dyn AsyncRead>, StorageError>;
 
-    fn list_objects(&self, dto: &ListObjectsDTO) -> Result<Vec<ObjectMetadata>, StorageError>;
+    async fn list_objects(&self, dto: &ListObjectsDTO)
+    -> Result<Vec<ObjectMetadata>, StorageError>;
 
-    fn head_object(&self, dto: &HeadObjectDTO) -> Result<ObjectMetadata, StorageError>;
+    async fn head_object(&self, dto: &HeadObjectDTO) -> Result<ObjectMetadata, StorageError>;
 
-    fn delete_object(&self, dto: &DeleteObjectDTO) -> Result<(), StorageError>;
+    async fn delete_object(&self, dto: &DeleteObjectDTO) -> Result<(), StorageError>;
 }

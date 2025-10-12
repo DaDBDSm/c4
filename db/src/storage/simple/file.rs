@@ -1,10 +1,7 @@
 use std::io::Cursor;
-use std::io::ErrorKind::AlreadyExists;
-use std::{
-    fs::{self, File},
-    io::{self, Read, Write},
-    path::Path,
-};
+use tokio::fs::{self, File};
+use tokio::io::ErrorKind::AlreadyExists;
+use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 pub struct FileManager {
     max_file_size_bytes: u64,
@@ -19,21 +16,25 @@ impl FileManager {
         }
     }
 
-    pub fn create_file<R: Read>(&self, reader: &mut R, path: &str) -> io::Result<u64> {
-        let mut file = File::create(path)?;
-        file.lock()?;
+    pub async fn create_file<R: AsyncRead + Unpin>(
+        &self,
+        reader: &mut R,
+        path: &str,
+    ) -> io::Result<u64> {
+        let mut file = File::create(path).await?;
 
         let mut buffer = vec![0u8; self.buffer_size_bytes];
         let mut total_written: u64 = 0;
+
         loop {
-            let n = reader.read(&mut buffer)?;
+            let n = reader.read(&mut buffer).await?;
             if n == 0 {
                 break;
             }
             total_written += n as u64;
 
             if total_written > self.max_file_size_bytes {
-                _ = fs::remove_file(path);
+                fs::remove_file(path).await?;
                 return Err(io::Error::new(
                     io::ErrorKind::FileTooLarge,
                     format!(
@@ -43,59 +44,51 @@ impl FileManager {
                 ));
             }
 
-            file.write_all(&buffer[..n])?;
+            file.write(&buffer[..n]).await?;
         }
+
         Ok(total_written)
     }
 
-    pub fn delete_file(&self, path: &str) -> io::Result<()> {
-        if Path::new(path).exists() {
-            let file = File::options().write(true).open(path)?;
-            file.lock()?;
-            fs::remove_file(path)?;
+    pub async fn delete_file(&self, path: &str) -> io::Result<()> {
+        if fs::try_exists(path).await? {
+            fs::remove_file(path).await?;
         }
         Ok(())
     }
 
-    pub fn create_dir(&self, path: &str) -> io::Result<()> {
-        if Path::new(path).exists() {
+    pub async fn create_dir(&self, path: &str) -> io::Result<()> {
+        if fs::try_exists(path).await? {
             return Err(io::Error::new(AlreadyExists, "Directory already exists"));
         }
-        fs::create_dir_all(path)?;
+        fs::create_dir_all(path).await?;
         Ok(())
     }
 
-    pub fn delete_dir(&self, path: &str) -> io::Result<()> {
-        if Path::new(path).exists() {
-            fs::remove_dir_all(path)?;
+    pub async fn delete_dir(&self, path: &str) -> io::Result<()> {
+        if fs::try_exists(path).await? {
+            fs::remove_dir_all(path).await?;
         }
         Ok(())
     }
 
-    pub fn list_dir(&self, path: &str) -> io::Result<Vec<String>> {
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
+    pub async fn list_dir(&self, path: &str) -> io::Result<Vec<String>> {
+        let mut result = Vec::new();
+        let mut entries = fs::read_dir(path).await?;
+
+        while let Some(entry) = entries.next_entry().await? {
             let name = entry.file_name().into_string().unwrap_or_default();
-            entries.push(name);
+            result.push(name);
         }
-        Ok(entries)
+        Ok(result)
     }
 
-    pub fn open_file_checked(&self, path: &str) -> io::Result<File> {
-        let file = File::open(path)?;
-        file.lock_shared()?;
-        let metadata = file.metadata()?;
-        if metadata.len() > self.max_file_size_bytes {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "File exceeds maximum allowed size",
-            ));
-        }
+    pub async fn open_file_checked(&self, path: &str) -> io::Result<File> {
+        let file = File::open(path).await?;
         Ok(file)
     }
 
-    pub fn add_prefix_to_reader<R: Read>(&self, prefix: &[u8], reader: R) -> impl Read {
-        Cursor::new(prefix).chain(reader)
+    pub fn add_prefix_to_reader<R: AsyncRead>(&self, prefix: &[u8], reader: R) -> impl AsyncRead {
+        Cursor::new(prefix.to_vec()).chain(reader)
     }
 }
