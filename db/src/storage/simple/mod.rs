@@ -2,7 +2,8 @@ pub mod file;
 mod meta;
 
 use tokio::fs::File;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{self, AsyncReadExt};
+use tokio_stream::{Stream, StreamExt};
 
 use crate::storage::errors::StorageError;
 use crate::storage::simple::file::FileManager;
@@ -19,6 +20,7 @@ use tokio::io::ErrorKind;
 
 const DEFAULT_LIMIT: u64 = 20;
 
+#[derive(Clone)]
 pub struct ObjectStorageSimple {
     pub base_dir: PathBuf,
     pub file_manager: FileManager,
@@ -46,17 +48,22 @@ impl ObjectStorageSimple {
             .and_then(|object_path| Ok(String::from(object_path)))
     }
 
-    async fn get_object_reader(
+    pub async fn get_object_stream(
         &self,
-        bucket_name: &BucketName,
-        key: &ObjectKey,
-    ) -> Result<(Box<dyn AsyncRead + Unpin>, ObjectMetadata), StorageError> {
-        let mut object_reader = match self
-            .file_manager
-            .open_file_checked(&self.object_path(bucket_name, key)?)
-            .await
-        {
-            Ok(f) => f,
+        bucket_name: BucketName,
+        key: ObjectKey,
+    ) -> Result<
+        (
+            impl Stream<Item = io::Result<Vec<u8>>> + Unpin + Send + Sync,
+            ObjectMetadata,
+        ),
+        StorageError,
+    > {
+        let path = self.object_path(&bucket_name, &key)?;
+
+        // Get the file stream using the existing function
+        let raw_stream = match self.file_manager.stream_file(&path).await {
+            Ok(s) => s,
             Err(e) if e.kind() == ErrorKind::NotFound => {
                 return Err(StorageError::ObjectNotFound {
                     bucket: bucket_name.clone(),
@@ -66,21 +73,60 @@ impl ObjectStorageSimple {
             Err(e) => return Err(StorageError::IoError(e)),
         };
 
-        let object_metadata = self
-            .get_object_metadata(&mut object_reader, bucket_name, key)
-            .await?;
-        Ok((Box::new(object_reader), object_metadata))
+        // Skip the header by reading it first, then stream the rest
+        let header_size = ObjectHeader::SIZE;
+        let mut header_bytes_read = 0;
+        let mut _header_skipped = false;
+        
+        // Use a different approach: read the header first, then stream the rest
+        let mut chunks = Vec::new();
+        let mut stream = raw_stream;
+        
+        // Read chunks until we've skipped the header
+        while header_bytes_read < header_size {
+            match stream.next().await {
+                Some(Ok(chunk)) => {
+                    if header_bytes_read + chunk.len() <= header_size {
+                        // This entire chunk is header
+                        header_bytes_read += chunk.len();
+                        if header_bytes_read == header_size {
+                            _header_skipped = true;
+                        }
+                    } else {
+                        // This chunk contains both header and data
+                        let data_start = header_size - header_bytes_read;
+                        let data_chunk = chunk[data_start..].to_vec();
+                        chunks.push(Ok(data_chunk));
+                        _header_skipped = true;
+                        break;
+                    }
+                }
+                Some(Err(e)) => return Err(StorageError::IoError(e)),
+                None => return Err(StorageError::Internal("File too short".to_string())),
+            }
+        }
+        
+        // Create a stream from the remaining chunks plus the rest of the original stream
+        let data_stream = tokio_stream::iter(chunks);
+        let remaining_stream = stream.map(|chunk| chunk);
+        let combined_stream = tokio_stream::StreamExt::chain(data_stream, remaining_stream);
+
+        let stream: Box<dyn Stream<Item = io::Result<Vec<u8>>> + Unpin + Send + Sync> = Box::new(combined_stream);
+        let object_metadata = self.get_object_metadata(&path, &bucket_name, &key).await?;
+
+        Ok((stream, object_metadata))
     }
 
     async fn get_object_metadata(
         &self,
-        object_reader: &mut File,
+        path: &str,
         bucket_name: &BucketName,
         key: &ObjectKey,
     ) -> Result<ObjectMetadata, StorageError> {
+        let mut object_reader = File::open(path).await.unwrap();
         let mut object_header_bytes = [0u8; ObjectHeader::SIZE];
         object_reader
-            .read_exact(&mut object_header_bytes)
+            .read(&mut object_header_bytes)
             .await
             .map_err(StorageError::IoError)?;
 
@@ -94,10 +140,13 @@ impl ObjectStorageSimple {
             .await
             .map_err(StorageError::IoError)?;
 
+        // Calculate the actual object size (file size minus header)
+        let actual_size = file_metadata.len() - ObjectHeader::SIZE as u64;
+
         Ok(ObjectMetadata {
             bucket_name: bucket_name.clone(),
             key: key.clone(),
-            size: file_metadata.len() - ObjectHeader::SIZE as u64,
+            size: actual_size,
             created_at: object_header.created_at,
         })
     }
@@ -159,13 +208,9 @@ impl ObjectStorage for ObjectStorageSimple {
         };
         let object_header_bytes = object_header.to_bytes();
 
-        let mut reader_with_header = self
-            .file_manager
-            .add_prefix_to_reader(&object_header_bytes, dto.reader.as_mut());
-
         let object_size = match self
             .file_manager
-            .create_file(&mut reader_with_header, &object_path)
+            .create_file(&mut dto.stream, &object_header_bytes, &object_path)
             .await
         {
             Ok(sz) => sz,
@@ -188,8 +233,9 @@ impl ObjectStorage for ObjectStorageSimple {
     async fn get_object(
         &self,
         dto: &GetObjectDTO,
-    ) -> Result<Box<dyn AsyncRead + Unpin>, StorageError> {
-        Ok(self.get_object_reader(&dto.bucket_name, &dto.key).await?.0)
+    ) -> Result<impl Stream<Item = io::Result<Vec<u8>>>, StorageError> {
+        let (stream, _) = self.get_object_stream(dto.bucket_name.clone(), dto.key.clone()).await?;
+        Ok(stream)
     }
 
     async fn list_objects(
@@ -215,7 +261,7 @@ impl ObjectStorage for ObjectStorageSimple {
             }
 
             metas.push(
-                self.get_object_reader(&dto.bucket_name, &object_key)
+                self.get_object_stream(dto.bucket_name.clone(), object_key.clone())
                     .await?
                     .1,
             );
@@ -236,7 +282,7 @@ impl ObjectStorage for ObjectStorageSimple {
     }
 
     async fn head_object(&self, dto: &HeadObjectDTO) -> Result<ObjectMetadata, StorageError> {
-        Ok(self.get_object_reader(&dto.bucket_name, &dto.key).await?.1)
+        Ok(self.get_object_stream(dto.bucket_name.clone(), dto.key.clone()).await?.1)
     }
 
     async fn delete_object(&self, dto: &DeleteObjectDTO) -> Result<(), StorageError> {

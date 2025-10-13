@@ -1,5 +1,5 @@
-use std::io::Cursor;
 use tempfile::TempDir;
+use tokio_stream::StreamExt;
 
 use db::storage::errors::StorageError;
 use db::storage::simple::ObjectStorageSimple;
@@ -8,7 +8,6 @@ use db::storage::{
     CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, GetObjectDTO, HeadObjectDTO, ListBucketsDTO,
     ListObjectsDTO, ObjectStorage, PutObjectDTO, SortingOrder,
 };
-use tokio::io::AsyncReadExt;
 
 async fn create_test_storage() -> (ObjectStorageSimple, TempDir) {
     let temp_dir: TempDir = TempDir::new().expect("Failed to create temp dir");
@@ -17,6 +16,22 @@ async fn create_test_storage() -> (ObjectStorageSimple, TempDir) {
         file_manager: FileManager::new(10 * 1024 * 1024, 1024),
     };
     (storage, temp_dir)
+}
+
+fn cursor_to_stream(data: &[u8]) -> Box<dyn tokio_stream::Stream<Item = Vec<u8>> + Unpin + Send> {
+    let stream = tokio_stream::iter(vec![data.to_vec()]);
+    Box::new(stream)
+}
+
+async fn collect_stream_to_vec(mut stream: impl tokio_stream::Stream<Item = std::io::Result<Vec<u8>>> + Unpin) -> Vec<u8> {
+    let mut result = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(data) => result.extend(data),
+            Err(e) => panic!("Stream error: {}", e),
+        }
+    }
+    result
 }
 
 #[tokio::test]
@@ -84,8 +99,6 @@ async fn test_delete_bucket() {
 
     let bucket_name = "test-bucket".to_string();
     let object_key = "test-object.txt".to_string();
-    let reader: Cursor<&[u8]> = Cursor::new(b"test_data");
-
     storage
         .create_bucket(&CreateBucketDTO {
             bucket_name: bucket_name.clone(),
@@ -96,7 +109,7 @@ async fn test_delete_bucket() {
     let mut put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
-        reader: Box::new(reader),
+        stream: cursor_to_stream(b"test_data"),
     };
     storage
         .put_object(&mut put_dto)
@@ -164,11 +177,10 @@ async fn test_put_and_get_object() {
         .await
         .expect("Failed to create bucket");
 
-    let reader: Cursor<&[u8]> = Cursor::new(test_data);
     let mut put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
-        reader: Box::new(reader),
+        stream: cursor_to_stream(test_data),
     };
     let metadata = storage
         .put_object(&mut put_dto)
@@ -178,8 +190,7 @@ async fn test_put_and_get_object() {
     assert_eq!(metadata.key, object_key);
     assert_eq!(metadata.size, test_data.len() as u64);
 
-    let reader: Cursor<&[u8]> = Cursor::new(test_data);
-    put_dto.reader = Box::new(reader);
+    put_dto.stream = cursor_to_stream(test_data);
     let metadata = storage
         .put_object(&mut put_dto)
         .await
@@ -188,19 +199,16 @@ async fn test_put_and_get_object() {
     assert_eq!(metadata.key, object_key);
     assert_eq!(metadata.size, test_data.len() as u64);
 
-    let mut reader = storage
-        .get_object(&GetObjectDTO {
-            bucket_name: bucket_name.clone(),
-            key: object_key.clone(),
-        })
+    let get_dto = GetObjectDTO {
+        bucket_name: bucket_name.clone(),
+        key: object_key.clone(),
+    };
+    let stream = storage
+        .get_object(&get_dto)
         .await
         .expect("Failed to get object");
 
-    let mut read_data = Vec::new();
-    reader
-        .read_to_end(&mut read_data)
-        .await
-        .expect("Failed to read object data");
+    let read_data = collect_stream_to_vec(stream).await;
     assert_eq!(read_data, test_data);
 
     storage
@@ -226,11 +234,10 @@ async fn test_head_object() {
         .await
         .expect("Failed to create bucket");
 
-    let reader: Cursor<&[u8]> = Cursor::new(test_data);
     let mut put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
-        reader: Box::new(reader),
+        stream: cursor_to_stream(test_data),
     };
     storage
         .put_object(&mut put_dto)
@@ -271,11 +278,10 @@ async fn test_delete_object() {
         .await
         .expect("Failed to create bucket");
 
-    let reader: Cursor<&[u8]> = Cursor::new(test_data);
     let mut put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
-        reader: Box::new(reader),
+        stream: cursor_to_stream(test_data),
     };
     storage
         .put_object(&mut put_dto)
@@ -330,11 +336,10 @@ async fn test_list_objects() {
 
     for object_name in test_objects.iter() {
         let test_data = format!("Data for {}", object_name).into_bytes();
-        let reader: Cursor<Vec<u8>> = Cursor::new(test_data);
         let mut put_dto = PutObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_name.to_string(),
-            reader: Box::new(reader),
+            stream: cursor_to_stream(&test_data),
         };
         storage
             .put_object(&mut put_dto)
@@ -482,11 +487,10 @@ async fn test_large_object() {
         .await
         .expect("Failed to create bucket");
 
-    let reader: Cursor<Vec<u8>> = Cursor::new(large_data.clone());
     let mut put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
-        reader: Box::new(reader),
+        stream: cursor_to_stream(&large_data),
     };
     let metadata = storage
         .put_object(&mut put_dto)
@@ -497,19 +501,16 @@ async fn test_large_object() {
     assert_eq!(metadata.bucket_name, bucket_name);
     assert_eq!(metadata.size, large_data.len().try_into().unwrap());
 
-    let mut reader = storage
-        .get_object(&GetObjectDTO {
-            bucket_name: bucket_name.clone(),
-            key: object_key.clone(),
-        })
+    let get_dto = GetObjectDTO {
+        bucket_name: bucket_name.clone(),
+        key: object_key.clone(),
+    };
+    let stream = storage
+        .get_object(&get_dto)
         .await
         .expect("Failed to get large object");
 
-    let mut read_data = Vec::new();
-    reader
-        .read_to_end(&mut read_data)
-        .await
-        .expect("Failed to read large object");
+    let read_data = collect_stream_to_vec(stream).await;
     assert_eq!(read_data.len(), large_data.len());
 
     storage
@@ -535,11 +536,10 @@ async fn test_empty_object() {
         .await
         .expect("Failed to create bucket");
 
-    let reader: Cursor<&[u8]> = Cursor::new(empty_data);
     let mut put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
-        reader: Box::new(reader),
+        stream: cursor_to_stream(empty_data),
     };
     let metadata = storage
         .put_object(&mut put_dto)
@@ -547,19 +547,16 @@ async fn test_empty_object() {
         .expect("Failed to put empty object");
     assert_eq!(metadata.size, 0);
 
-    let mut reader = storage
-        .get_object(&GetObjectDTO {
-            bucket_name: bucket_name.clone(),
-            key: object_key.clone(),
-        })
+    let get_dto = GetObjectDTO {
+        bucket_name: bucket_name.clone(),
+        key: object_key.clone(),
+    };
+    let stream = storage
+        .get_object(&get_dto)
         .await
         .expect("Failed to get empty object");
 
-    let mut read_data = Vec::new();
-    reader
-        .read_to_end(&mut read_data)
-        .await
-        .expect("Failed to read empty object");
+    let read_data = collect_stream_to_vec(stream).await;
     assert_eq!(read_data.len(), 0);
 
     storage

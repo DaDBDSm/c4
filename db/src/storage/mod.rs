@@ -1,6 +1,7 @@
 pub mod errors;
 pub mod simple;
-use tokio::io::AsyncRead;
+use tokio::io;
+use tokio_stream::Stream;
 
 use crate::storage::errors::StorageError;
 
@@ -45,7 +46,7 @@ pub struct ListBucketsDTO {
 pub struct PutObjectDTO {
     pub bucket_name: BucketName,
     pub key: ObjectKey,
-    pub reader: Box<dyn AsyncRead + Unpin>,
+    pub stream: Box<dyn Stream<Item = Vec<u8>> + Unpin + Send>,
 }
 
 pub struct GetObjectDTO {
@@ -83,7 +84,7 @@ pub trait ObjectStorage {
     async fn get_object(
         &self,
         dto: &GetObjectDTO,
-    ) -> Result<Box<dyn AsyncRead + Unpin>, StorageError>;
+    ) -> Result<impl Stream<Item = io::Result<Vec<u8>>>, StorageError>;
 
     async fn list_objects(&self, dto: &ListObjectsDTO)
     -> Result<Vec<ObjectMetadata>, StorageError>;

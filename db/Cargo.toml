@@ -9,6 +9,10 @@ grpc-server = { path = "../grpc-server" }
 tonic = "0.14.2"
 tokio = { version = "1.47.1", features = ["full"] }
 tokio-stream = "0.1.17"
+async-stream = "0.3"
+futures-util = "0.3"
 
 [dev-dependencies]
 tempfile = "3.22.0"
+tokio = { version = "1.47.1", features = ["full"] }
+tokio-stream = "0.1.17"

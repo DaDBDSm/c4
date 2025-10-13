@@ -1,10 +1,11 @@
-use crate::storage;
 use crate::storage::errors::StorageError;
+use crate::storage::{self, PutObjectDTO};
 use crate::storage::{
     CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, HeadObjectDTO, ListBucketsDTO,
     ListObjectsDTO, ObjectStorage, SortingOrder,
 };
 use grpc_server::object_storage::c4_server::C4;
+use grpc_server::object_storage::put_object_request;
 use grpc_server::object_storage::{
     CreateBucketRequest, DeleteBucketRequest, DeleteObjectRequest, GetObjectRequest,
     GetObjectResponse, HeadObjectRequest, HeadObjectResponse, ListBucketsRequest,
@@ -13,7 +14,9 @@ use grpc_server::object_storage::{
 };
 use std::pin::Pin;
 use tokio_stream::Stream;
+use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
+use async_stream::stream;
 
 pub struct C4Handler {
     pub c4_storage: storage::simple::ObjectStorageSimple,
@@ -89,97 +92,55 @@ impl C4 for C4Handler {
         &self,
         request: Request<Streaming<PutObjectRequest>>,
     ) -> Result<Response<PutObjectResponse>, Status> {
-        todo!()
-        // let mut object_streamer = request.into_inner();
-        //
-        // // Get the first message which should contain the object ID
-        // let object_id = match object_streamer.message().await? {
-        //     None => {
-        //         return Err(Status::invalid_argument("empty request"));
-        //     }
-        //     Some(s) => {
-        //         if s.req.is_some() {
-        //             match s.req.unwrap() {
-        //                 Req::ObjectPart(_) => {
-        //                     return Err(Status::invalid_argument(
-        //                         "object id must be first request",
-        //                     ));
-        //                 }
-        //                 Req::Id(id) => id,
-        //             }
-        //         } else {
-        //             return Err(Status::invalid_argument("empty object id"));
-        //         }
-        //     }
-        // };
-        //
-        // // Create a channel to bridge between async stream and sync Read trait
-        // let (sender, receiver) = mpsc::channel::<Vec<u8>>();
-        //
-        // // Spawn a task to read from the stream and send data through the channel
-        // let _stream_task = tokio::spawn(async move {
-        //     while let Some(request_result) = object_streamer.next().await {
-        //         match request_result {
-        //             Ok(request) => {
-        //                 if let Some(req) = request.req {
-        //                     match req {
-        //                         Req::ObjectPart(data) => {
-        //                             if sender.send(data).is_err() {
-        //                                 // Receiver was dropped, stop processing
-        //                                 break;
-        //                             }
-        //                         }
-        //                         Req::Id(_) => {
-        //                             // Object ID should only be in the first message
-        //                             // Skip this or handle as error
-        //                             continue;
-        //                         }
-        //                     }
-        //                 }
-        //             }
-        //             Err(e) => {
-        //                 eprintln!("Error reading from stream: {:?}", e);
-        //                 break;
-        //             }
-        //         }
-        //     }
-        //     // Send empty data to signal end of stream
-        //     let _ = sender.send(Vec::new());
-        // });
-        //
-        // // Create the reader that implements Read trait
-        // let reader = Box::new(receiver);
-        //
-        // // Create the PutObjectDTO
-        // let mut put_dto = PutObjectDTO {
-        //     bucket_name: object_id.bucket_name,
-        //     key: object_id.object_key,
-        //     reader,
-        // };
-        //
-        // // Call the storage implementation
-        // match self.c4_storage.put_object(&mut put_dto) {
-        //     Ok(metadata) => {
-        //         // Convert to gRPC response format
-        //         let response_metadata = grpc_server::object_storage::ObjectMetadata {
-        //             id: Some(grpc_server::object_storage::ObjectId {
-        //                 bucket_name: metadata.bucket_name,
-        //                 object_key: metadata.key,
-        //             }),
-        //             size: metadata.size,
-        //             created_at: metadata.created_at,
-        //         };
-        //
-        //         Ok(Response::new(PutObjectResponse {
-        //             metadata: Some(response_metadata),
-        //         }))
-        //     }
-        //     Err(e) => match e {
-        //         StorageError::InvalidInput(msg) => Err(Status::invalid_argument(msg)),
-        //         StorageError::IoError(_) => Err(Status::internal("internal io error")),
-        //         _ => Err(Status::internal("internal error")),
-        //     },
-        // }
+        let mut stream = request.into_inner();
+
+        let first_msg = stream
+            .message()
+            .await
+            .map_err(|e| Status::internal(format!("stream read error: {}", e)))?
+            .ok_or_else(|| Status::invalid_argument("empty request stream"))?;
+
+        let object_id = match first_msg.req {
+            Some(put_object_request::Req::Id(id)) => id,
+            _ => {
+                return Err(Status::invalid_argument(
+                    "first message must contain ObjectId",
+                ));
+            }
+        };
+
+        let byte_stream = stream.map(|res| match res {
+            Err(_) => Vec::new(),
+            Ok(msg) => match msg.req {
+                Some(put_object_request::Req::ObjectPart(bytes)) => bytes,
+                _ => Vec::new(),
+            },
+        });
+
+        let mut dto = PutObjectDTO {
+            bucket_name: object_id.bucket_name,
+            key: object_id.object_key,
+            stream: Box::new(byte_stream),
+        };
+
+        let metadata = self
+            .c4_storage
+            .put_object(&mut dto)
+            .await
+            .map_err(|_e| Status::internal("storage error"))?;
+
+        let response = PutObjectResponse {
+            metadata: Some(ObjectMetadata {
+                id: Some(ObjectId {
+                    bucket_name: metadata.bucket_name,
+                    object_key: metadata.key,
+                }),
+                size: metadata.size,
+                created_at: metadata.created_at,
+            }),
+        };
+
+        Ok(Response::new(response))
     }
 
     type GetObjectStream =
@@ -189,7 +150,34 @@ impl C4 for C4Handler {
         &self,
         request: Request<GetObjectRequest>,
     ) -> Result<Response<Self::GetObjectStream>, Status> {
-        todo!()
+        let get_object_request = request.into_inner();
+        let object_id = get_object_request
+            .id
+            .ok_or_else(|| Status::invalid_argument("Object ID is required"))?;
+
+        let bucket_name = object_id.bucket_name.clone();
+        let key = object_id.object_key.clone();
+
+        // Create a static stream by cloning the storage and moving it into the stream
+        let storage = self.c4_storage.clone();
+        let stream = stream! {
+            match storage.get_object_stream(bucket_name, key).await {
+                Ok((byte_stream, _metadata)) => {
+                    let mut stream = byte_stream;
+                    while let Some(result) = stream.next().await {
+                        match result {
+                            Ok(data) => yield Ok(GetObjectResponse { object_part: data }),
+                            Err(e) => yield Err(Status::internal(format!("Stream error: {}", e))),
+                        }
+                    }
+                }
+                Err(_e) => {
+                    yield Err(Status::internal("storage error"));
+                }
+            }
+        };
+
+        Ok(Response::new(Box::pin(stream)))
     }
 
     async fn list_objects(

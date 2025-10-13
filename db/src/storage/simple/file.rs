@@ -1,8 +1,11 @@
-use std::io::Cursor;
 use tokio::fs::{self, File};
 use tokio::io::ErrorKind::AlreadyExists;
-use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio_stream::{Stream, StreamExt};
 
+#[derive(Clone)]
 pub struct FileManager {
     max_file_size_bytes: u64,
     buffer_size_bytes: usize,
@@ -16,21 +19,22 @@ impl FileManager {
         }
     }
 
-    pub async fn create_file<R: AsyncRead + Unpin>(
-        &self,
-        reader: &mut R,
-        path: &str,
-    ) -> io::Result<u64> {
+    pub async fn create_file<S>(&self, stream: S, header: &[u8], path: &str) -> io::Result<u64>
+    where
+        S: Stream<Item = Vec<u8>> + Unpin,
+    {
         let mut file = File::create(path).await?;
-
-        let mut buffer = vec![0u8; self.buffer_size_bytes];
         let mut total_written: u64 = 0;
 
-        loop {
-            let n = reader.read(&mut buffer).await?;
-            if n == 0 {
-                break;
-            }
+        file.write_all(header).await?;
+        total_written += header.len() as u64;
+
+        tokio::pin!(stream);
+
+        while let Some(chunk) = stream.next().await {
+            let bytes = chunk;
+            let n = bytes.len();
+
             total_written += n as u64;
 
             if total_written > self.max_file_size_bytes {
@@ -44,7 +48,7 @@ impl FileManager {
                 ));
             }
 
-            file.write(&buffer[..n]).await?;
+            file.write_all(&bytes).await?;
         }
 
         Ok(total_written)
@@ -83,12 +87,31 @@ impl FileManager {
         Ok(result)
     }
 
-    pub async fn open_file_checked(&self, path: &str) -> io::Result<File> {
-        let file = File::open(path).await?;
-        Ok(file)
-    }
+    pub async fn stream_file(&self, path: &str) -> io::Result<ReceiverStream<io::Result<Vec<u8>>>> {
+        let mut file = File::open(path).await?;
+        let (tx, rx) = mpsc::channel(self.buffer_size_bytes);
+        let buffer_size = self.buffer_size_bytes;
 
-    pub fn add_prefix_to_reader<R: AsyncRead>(&self, prefix: &[u8], reader: R) -> impl AsyncRead {
-        Cursor::new(prefix.to_vec()).chain(reader)
+        tokio::spawn(async move {
+            let mut buffer = vec![0u8; buffer_size];
+
+            loop {
+                match file.read(&mut buffer).await {
+                    Ok(0) => break, // EOF
+                    Ok(n) => {
+                        let chunk = buffer[..n].to_vec();
+                        if tx.send(Ok(chunk)).await.is_err() {
+                            break; // Receiver dropped
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e)).await;
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(ReceiverStream::new(rx))
     }
 }
