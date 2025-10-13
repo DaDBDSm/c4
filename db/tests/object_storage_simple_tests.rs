@@ -8,8 +8,9 @@ use db::storage::{
     CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, GetObjectDTO, HeadObjectDTO, ListBucketsDTO,
     ListObjectsDTO, ObjectStorage, PutObjectDTO, SortingOrder,
 };
+use tokio::io::AsyncReadExt;
 
-fn create_test_storage() -> (ObjectStorageSimple, TempDir) {
+async fn create_test_storage() -> (ObjectStorageSimple, TempDir) {
     let temp_dir: TempDir = TempDir::new().expect("Failed to create temp dir");
     let storage = ObjectStorageSimple {
         base_dir: temp_dir.path().to_path_buf(),
@@ -18,9 +19,9 @@ fn create_test_storage() -> (ObjectStorageSimple, TempDir) {
     (storage, temp_dir)
 }
 
-#[test]
-fn test_create_and_list_buckets() {
-    let (storage, _temp_dir) = create_test_storage();
+#[tokio::test]
+async fn test_create_and_list_buckets() {
+    let (storage, _temp_dir) = create_test_storage().await;
 
     let bucket1 = "test-bucket-1".to_string();
     let bucket2 = "test-bucket-2".to_string();
@@ -29,15 +30,20 @@ fn test_create_and_list_buckets() {
         .create_bucket(&CreateBucketDTO {
             bucket_name: bucket1.clone(),
         })
+        .await
         .expect("Failed to create bucket 1");
     storage
         .create_bucket(&CreateBucketDTO {
             bucket_name: bucket2.clone(),
         })
+        .await
         .expect("Failed to create bucket 2");
-    match storage.create_bucket(&CreateBucketDTO {
-        bucket_name: bucket2.clone(),
-    }) {
+    match storage
+        .create_bucket(&CreateBucketDTO {
+            bucket_name: bucket2.clone(),
+        })
+        .await
+    {
         Err(StorageError::BucketAlreadyExists { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
@@ -52,6 +58,7 @@ fn test_create_and_list_buckets() {
             offset: Some(0),
             limit: Some(10),
         })
+        .await
         .expect("Failed to list buckets");
     assert_eq!(buckets.len(), 2);
     assert!(buckets.contains(&bucket1));
@@ -61,17 +68,19 @@ fn test_create_and_list_buckets() {
         .delete_bucket(&DeleteBucketDTO {
             bucket_name: bucket1.clone(),
         })
+        .await
         .expect("Failed to delete bucket");
     storage
         .delete_bucket(&DeleteBucketDTO {
             bucket_name: bucket2.clone(),
         })
+        .await
         .expect("Failed to delete bucket");
 }
 
-#[test]
-fn test_delete_bucket() {
-    let (storage, _temp_dir) = create_test_storage();
+#[tokio::test]
+async fn test_delete_bucket() {
+    let (storage, _temp_dir) = create_test_storage().await;
 
     let bucket_name = "test-bucket".to_string();
     let object_key = "test-object.txt".to_string();
@@ -81,6 +90,7 @@ fn test_delete_bucket() {
         .create_bucket(&CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to create bucket");
 
     let mut put_dto = PutObjectDTO {
@@ -90,6 +100,7 @@ fn test_delete_bucket() {
     };
     storage
         .put_object(&mut put_dto)
+        .await
         .expect("Failed to put object");
 
     let buckets = storage
@@ -97,6 +108,7 @@ fn test_delete_bucket() {
             offset: Some(0),
             limit: Some(10),
         })
+        .await
         .expect("Failed to list buckets");
     assert_eq!(buckets.len(), 1);
     assert!(buckets.contains(&bucket_name));
@@ -105,6 +117,7 @@ fn test_delete_bucket() {
         .delete_bucket(&DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to delete bucket");
 
     let buckets = storage
@@ -112,16 +125,20 @@ fn test_delete_bucket() {
             offset: Some(0),
             limit: Some(10),
         })
+        .await
         .expect("Failed to list buckets");
     assert_eq!(buckets.len(), 0);
 
-    match storage.list_objects(&ListObjectsDTO {
-        bucket_name: bucket_name.clone(),
-        offset: Some(0),
-        limit: Some(10),
-        sorting_order: Some(SortingOrder::ASC),
-        prefix: None,
-    }) {
+    match storage
+        .list_objects(&ListObjectsDTO {
+            bucket_name: bucket_name.clone(),
+            offset: Some(0),
+            limit: Some(10),
+            sorting_order: Some(SortingOrder::ASC),
+            prefix: None,
+        })
+        .await
+    {
         Err(StorageError::IoError { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
@@ -132,9 +149,9 @@ fn test_delete_bucket() {
     };
 }
 
-#[test]
-fn test_put_and_get_object() {
-    let (storage, _temp_dir) = create_test_storage();
+#[tokio::test]
+async fn test_put_and_get_object() {
+    let (storage, _temp_dir) = create_test_storage().await;
 
     let bucket_name = "test-bucket".to_string();
     let object_key = "test-object.txt".to_string();
@@ -144,6 +161,7 @@ fn test_put_and_get_object() {
         .create_bucket(&CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to create bucket");
 
     let reader: Cursor<&[u8]> = Cursor::new(test_data);
@@ -154,6 +172,7 @@ fn test_put_and_get_object() {
     };
     let metadata = storage
         .put_object(&mut put_dto)
+        .await
         .expect("Failed to put object");
     assert_eq!(metadata.bucket_name, bucket_name);
     assert_eq!(metadata.key, object_key);
@@ -163,6 +182,7 @@ fn test_put_and_get_object() {
     put_dto.reader = Box::new(reader);
     let metadata = storage
         .put_object(&mut put_dto)
+        .await
         .expect("Failed to put object");
     assert_eq!(metadata.bucket_name, bucket_name);
     assert_eq!(metadata.key, object_key);
@@ -173,11 +193,13 @@ fn test_put_and_get_object() {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
+        .await
         .expect("Failed to get object");
 
     let mut read_data = Vec::new();
     reader
         .read_to_end(&mut read_data)
+        .await
         .expect("Failed to read object data");
     assert_eq!(read_data, test_data);
 
@@ -185,12 +207,13 @@ fn test_put_and_get_object() {
         .delete_bucket(&DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to delete bucket");
 }
 
-#[test]
-fn test_head_object() {
-    let (storage, _temp_dir) = create_test_storage();
+#[tokio::test]
+async fn test_head_object() {
+    let (storage, _temp_dir) = create_test_storage().await;
 
     let bucket_name = "test-bucket".to_string();
     let object_key = "test-object.txt".to_string();
@@ -200,6 +223,7 @@ fn test_head_object() {
         .create_bucket(&CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to create bucket");
 
     let reader: Cursor<&[u8]> = Cursor::new(test_data);
@@ -210,6 +234,7 @@ fn test_head_object() {
     };
     storage
         .put_object(&mut put_dto)
+        .await
         .expect("Failed to put object");
 
     let metadata = storage
@@ -217,6 +242,7 @@ fn test_head_object() {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
+        .await
         .expect("Failed to head object");
     assert_eq!(metadata.bucket_name, bucket_name);
     assert_eq!(metadata.key, object_key);
@@ -226,12 +252,13 @@ fn test_head_object() {
         .delete_bucket(&DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to delete bucket");
 }
 
-#[test]
-fn test_delete_object() {
-    let (storage, _temp_dir) = create_test_storage();
+#[tokio::test]
+async fn test_delete_object() {
+    let (storage, _temp_dir) = create_test_storage().await;
 
     let bucket_name = "test-bucket".to_string();
     let object_key = "test-object.txt".to_string();
@@ -241,6 +268,7 @@ fn test_delete_object() {
         .create_bucket(&CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to create bucket");
 
     let reader: Cursor<&[u8]> = Cursor::new(test_data);
@@ -251,6 +279,7 @@ fn test_delete_object() {
     };
     storage
         .put_object(&mut put_dto)
+        .await
         .expect("Failed to put object");
 
     storage
@@ -258,12 +287,16 @@ fn test_delete_object() {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
+        .await
         .expect("Failed to delete object");
 
-    match storage.head_object(&HeadObjectDTO {
-        bucket_name: bucket_name.clone(),
-        key: object_key.clone(),
-    }) {
+    match storage
+        .head_object(&HeadObjectDTO {
+            bucket_name: bucket_name.clone(),
+            key: object_key.clone(),
+        })
+        .await
+    {
         Err(StorageError::ObjectNotFound { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
@@ -277,12 +310,13 @@ fn test_delete_object() {
         .delete_bucket(&DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to delete bucket");
 }
 
-#[test]
-fn test_list_objects() {
-    let (storage, _temp_dir) = create_test_storage();
+#[tokio::test]
+async fn test_list_objects() {
+    let (storage, _temp_dir) = create_test_storage().await;
 
     let bucket_name = "test-bucket".to_string();
     let test_objects = vec!["object1.txt", "object2.txt", "prefix_object.txt"];
@@ -291,6 +325,7 @@ fn test_list_objects() {
         .create_bucket(&CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to create bucket");
 
     for object_name in test_objects.iter() {
@@ -303,6 +338,7 @@ fn test_list_objects() {
         };
         storage
             .put_object(&mut put_dto)
+            .await
             .expect(&format!("Failed to put object {}", object_name));
     }
 
@@ -314,6 +350,7 @@ fn test_list_objects() {
             sorting_order: Some(SortingOrder::ASC),
             prefix: None,
         })
+        .await
         .expect("Failed to list objects");
     assert_eq!(objects.len(), 3);
     assert!(objects[0].key < objects[1].key);
@@ -327,6 +364,7 @@ fn test_list_objects() {
             sorting_order: Some(SortingOrder::ASC),
             prefix: Some("prefix".to_string()),
         })
+        .await
         .expect("Failed to list prefixed objects");
     assert_eq!(prefixed_objects.len(), 1);
     assert_eq!(prefixed_objects[0].key, "prefix_object.txt");
@@ -339,6 +377,7 @@ fn test_list_objects() {
             sorting_order: Some(SortingOrder::ASC),
             prefix: None,
         })
+        .await
         .expect("Failed to list first page");
     assert_eq!(first_page.len(), 2);
 
@@ -350,6 +389,7 @@ fn test_list_objects() {
             sorting_order: Some(SortingOrder::ASC),
             prefix: None,
         })
+        .await
         .expect("Failed to list second page");
     assert_eq!(second_page.len(), 1);
 
@@ -361,6 +401,7 @@ fn test_list_objects() {
             sorting_order: Some(SortingOrder::DESC),
             prefix: None,
         })
+        .await
         .expect("Failed to list objects in DESC order");
     assert_eq!(desc_objects.len(), 3);
     assert!(desc_objects[0].key > desc_objects[1].key);
@@ -370,12 +411,13 @@ fn test_list_objects() {
         .delete_bucket(&DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to delete bucket");
 }
 
-#[test]
-fn test_bucket_pagination() {
-    let (storage, _temp_dir) = create_test_storage();
+#[tokio::test]
+async fn test_bucket_pagination() {
+    let (storage, _temp_dir) = create_test_storage().await;
 
     let bucket_names = vec!["bucket-a", "bucket-b", "bucket-c"];
     for bucket_name in &bucket_names {
@@ -383,6 +425,7 @@ fn test_bucket_pagination() {
             .create_bucket(&CreateBucketDTO {
                 bucket_name: bucket_name.to_string(),
             })
+            .await
             .expect("Failed to create bucket");
     }
 
@@ -391,6 +434,7 @@ fn test_bucket_pagination() {
             offset: Some(0),
             limit: Some(2),
         })
+        .await
         .expect("Failed to list first page");
     assert_eq!(first_page.len(), 2);
 
@@ -399,6 +443,7 @@ fn test_bucket_pagination() {
             offset: Some(2),
             limit: Some(2),
         })
+        .await
         .expect("Failed to list second page");
     assert_eq!(second_page.len(), 1);
 
@@ -407,6 +452,7 @@ fn test_bucket_pagination() {
             offset: Some(10),
             limit: Some(5),
         })
+        .await
         .expect("Failed to list empty page");
     assert_eq!(empty_page.len(), 0);
 
@@ -415,13 +461,14 @@ fn test_bucket_pagination() {
             .delete_bucket(&DeleteBucketDTO {
                 bucket_name: bucket_name.to_string(),
             })
+            .await
             .expect("Failed to delete bucket");
     }
 }
 
-#[test]
-fn test_large_object() {
-    let (storage, _temp_dir) = create_test_storage();
+#[tokio::test]
+async fn test_large_object() {
+    let (storage, _temp_dir) = create_test_storage().await;
 
     let bucket_name = "test-bucket".to_string();
     let object_key = "large-object.bin".to_string();
@@ -432,6 +479,7 @@ fn test_large_object() {
         .create_bucket(&CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to create bucket");
 
     let reader: Cursor<Vec<u8>> = Cursor::new(large_data.clone());
@@ -442,6 +490,7 @@ fn test_large_object() {
     };
     let metadata = storage
         .put_object(&mut put_dto)
+        .await
         .expect("Failed to put large object");
     assert_eq!(metadata.size, large_data.len() as u64);
     assert_eq!(metadata.key, object_key);
@@ -453,11 +502,13 @@ fn test_large_object() {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
+        .await
         .expect("Failed to get large object");
 
     let mut read_data = Vec::new();
     reader
         .read_to_end(&mut read_data)
+        .await
         .expect("Failed to read large object");
     assert_eq!(read_data.len(), large_data.len());
 
@@ -465,12 +516,13 @@ fn test_large_object() {
         .delete_bucket(&DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to delete bucket");
 }
 
-#[test]
-fn test_empty_object() {
-    let (storage, _temp_dir) = create_test_storage();
+#[tokio::test]
+async fn test_empty_object() {
+    let (storage, _temp_dir) = create_test_storage().await;
 
     let bucket_name = "test-bucket".to_string();
     let object_key = "empty.txt".to_string();
@@ -480,6 +532,7 @@ fn test_empty_object() {
         .create_bucket(&CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to create bucket");
 
     let reader: Cursor<&[u8]> = Cursor::new(empty_data);
@@ -490,6 +543,7 @@ fn test_empty_object() {
     };
     let metadata = storage
         .put_object(&mut put_dto)
+        .await
         .expect("Failed to put empty object");
     assert_eq!(metadata.size, 0);
 
@@ -498,11 +552,13 @@ fn test_empty_object() {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
+        .await
         .expect("Failed to get empty object");
 
     let mut read_data = Vec::new();
     reader
         .read_to_end(&mut read_data)
+        .await
         .expect("Failed to read empty object");
     assert_eq!(read_data.len(), 0);
 
@@ -510,23 +566,27 @@ fn test_empty_object() {
         .delete_bucket(&DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to delete bucket");
 }
 
-#[test]
-fn test_nonexistent_bucket_operations() {
-    let (storage, _temp_dir) = create_test_storage();
+#[tokio::test]
+async fn test_nonexistent_bucket_operations() {
+    let (storage, _temp_dir) = create_test_storage().await;
 
     let bucket_name = "nonexistent-bucket".to_string();
     let object_key = "test-object.txt".to_string();
 
-    match storage.list_objects(&ListObjectsDTO {
-        bucket_name: bucket_name.clone(),
-        offset: Some(0),
-        limit: Some(10),
-        sorting_order: Some(SortingOrder::ASC),
-        prefix: None,
-    }) {
+    match storage
+        .list_objects(&ListObjectsDTO {
+            bucket_name: bucket_name.clone(),
+            offset: Some(0),
+            limit: Some(10),
+            sorting_order: Some(SortingOrder::ASC),
+            prefix: None,
+        })
+        .await
+    {
         Err(StorageError::IoError { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
@@ -536,10 +596,13 @@ fn test_nonexistent_bucket_operations() {
         Ok(_) => panic!("expected error, got Ok"),
     };
 
-    match storage.get_object(&GetObjectDTO {
-        bucket_name: bucket_name.clone(),
-        key: object_key.clone(),
-    }) {
+    match storage
+        .get_object(&GetObjectDTO {
+            bucket_name: bucket_name.clone(),
+            key: object_key.clone(),
+        })
+        .await
+    {
         Err(StorageError::ObjectNotFound { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
@@ -549,10 +612,13 @@ fn test_nonexistent_bucket_operations() {
         Ok(_) => panic!("expected error, got Ok"),
     };
 
-    match storage.head_object(&HeadObjectDTO {
-        bucket_name: bucket_name.clone(),
-        key: object_key.clone(),
-    }) {
+    match storage
+        .head_object(&HeadObjectDTO {
+            bucket_name: bucket_name.clone(),
+            key: object_key.clone(),
+        })
+        .await
+    {
         Err(StorageError::ObjectNotFound { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
@@ -563,9 +629,9 @@ fn test_nonexistent_bucket_operations() {
     };
 }
 
-#[test]
-fn test_nonexistent_object_operations() {
-    let (storage, _temp_dir) = create_test_storage();
+#[tokio::test]
+async fn test_nonexistent_object_operations() {
+    let (storage, _temp_dir) = create_test_storage().await;
 
     let bucket_name = "test-bucket".to_string();
     let object_key = "nonexistent-object.txt".to_string();
@@ -574,12 +640,16 @@ fn test_nonexistent_object_operations() {
         .create_bucket(&CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to create bucket");
 
-    match storage.get_object(&GetObjectDTO {
-        bucket_name: bucket_name.clone(),
-        key: object_key.clone(),
-    }) {
+    match storage
+        .get_object(&GetObjectDTO {
+            bucket_name: bucket_name.clone(),
+            key: object_key.clone(),
+        })
+        .await
+    {
         Err(StorageError::ObjectNotFound { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
@@ -589,10 +659,13 @@ fn test_nonexistent_object_operations() {
         Ok(_) => panic!("expected error, got Ok"),
     };
 
-    match storage.head_object(&HeadObjectDTO {
-        bucket_name: bucket_name.clone(),
-        key: object_key.clone(),
-    }) {
+    match storage
+        .head_object(&HeadObjectDTO {
+            bucket_name: bucket_name.clone(),
+            key: object_key.clone(),
+        })
+        .await
+    {
         Err(StorageError::ObjectNotFound { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
@@ -607,11 +680,13 @@ fn test_nonexistent_object_operations() {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
+        .await
         .expect("Delete nonexistent object should not error");
 
     storage
         .delete_bucket(&DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
+        .await
         .expect("Failed to delete bucket");
 }

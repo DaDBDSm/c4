@@ -50,7 +50,7 @@ impl ObjectStorageSimple {
         &self,
         bucket_name: &BucketName,
         key: &ObjectKey,
-    ) -> Result<(Box<dyn AsyncRead>, ObjectMetadata), StorageError> {
+    ) -> Result<(Box<dyn AsyncRead + Unpin>, ObjectMetadata), StorageError> {
         let mut object_reader = match self
             .file_manager
             .open_file_checked(&self.object_path(bucket_name, key)?)
@@ -185,7 +185,10 @@ impl ObjectStorage for ObjectStorageSimple {
         })
     }
 
-    async fn get_object(&self, dto: &GetObjectDTO) -> Result<Box<dyn AsyncRead>, StorageError> {
+    async fn get_object(
+        &self,
+        dto: &GetObjectDTO,
+    ) -> Result<Box<dyn AsyncRead + Unpin>, StorageError> {
         Ok(self.get_object_reader(&dto.bucket_name, &dto.key).await?.0)
     }
 
@@ -211,7 +214,11 @@ impl ObjectStorage for ObjectStorageSimple {
                 continue;
             }
 
-            metas.push(self.get_object_reader(&dto.bucket_name, &object_key).await?.1);
+            metas.push(
+                self.get_object_reader(&dto.bucket_name, &object_key)
+                    .await?
+                    .1,
+            );
         }
 
         metas.sort_by(

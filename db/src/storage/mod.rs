@@ -80,7 +80,10 @@ pub trait ObjectStorage {
 
     async fn put_object(&self, dto: &mut PutObjectDTO) -> Result<ObjectMetadata, StorageError>;
 
-    async fn get_object(&self, dto: &GetObjectDTO) -> Result<Box<dyn AsyncRead>, StorageError>;
+    async fn get_object(
+        &self,
+        dto: &GetObjectDTO,
+    ) -> Result<Box<dyn AsyncRead + Unpin>, StorageError>;
 
     async fn list_objects(&self, dto: &ListObjectsDTO)
     -> Result<Vec<ObjectMetadata>, StorageError>;
