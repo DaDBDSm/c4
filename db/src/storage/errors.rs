@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::object_storage::{BucketName, ObjectKey};
+use crate::storage::{BucketName, ObjectKey};
 
 #[derive(Debug)]
 pub enum StorageError {

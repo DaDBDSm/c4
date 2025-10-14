@@ -1,8 +1,14 @@
 run:
-	cargo run
+	cargo run --bin db
+
+build:
+	cargo build
 
 test:
 	cargo test
+
+gen-proto:
+	cd client && cargo build
 
 cmp-encoders:
 	cargo run -p encoders-comparison --release
