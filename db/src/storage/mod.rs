@@ -73,23 +73,43 @@ pub struct ListObjectsDTO {
 }
 
 pub trait ObjectStorage {
-    async fn create_bucket(&self, dto: &CreateBucketDTO) -> Result<(), StorageError>;
+    fn create_bucket(
+        &self,
+        dto: &CreateBucketDTO,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
-    async fn list_buckets(&self, dto: &ListBucketsDTO) -> Result<Vec<BucketName>, StorageError>;
+    fn list_buckets(
+        &self,
+        dto: &ListBucketsDTO,
+    ) -> impl Future<Output = Result<Vec<BucketName>, StorageError>> + Send;
 
-    async fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError>;
+    fn delete_bucket(
+        &self,
+        dto: &DeleteBucketDTO,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
-    async fn put_object(&self, dto: &mut PutObjectDTO) -> Result<ObjectMetadata, StorageError>;
+    fn put_object(
+        &self,
+        dto: &mut PutObjectDTO,
+    ) -> impl Future<Output = Result<ObjectMetadata, StorageError>> + Send;
 
-    async fn get_object(
+    fn get_object(
         &self,
         dto: &GetObjectDTO,
-    ) -> Result<impl Stream<Item = io::Result<Vec<u8>>>, StorageError>;
+    ) -> impl Future<Output = Result<impl Stream<Item = io::Result<Vec<u8>>>, StorageError>> + Send;
 
-    async fn list_objects(&self, dto: &ListObjectsDTO)
-    -> Result<Vec<ObjectMetadata>, StorageError>;
+    fn list_objects(
+        &self,
+        dto: &ListObjectsDTO,
+    ) -> impl Future<Output = Result<Vec<ObjectMetadata>, StorageError>> + Send;
 
-    async fn head_object(&self, dto: &HeadObjectDTO) -> Result<ObjectMetadata, StorageError>;
+    fn head_object(
+        &self,
+        dto: &HeadObjectDTO,
+    ) -> impl Future<Output = Result<ObjectMetadata, StorageError>> + Send;
 
-    async fn delete_object(&self, dto: &DeleteObjectDTO) -> Result<(), StorageError>;
+    fn delete_object(
+        &self,
+        dto: &DeleteObjectDTO,
+    ) -> impl Future<Output = Result<(), StorageError>> + Send;
 }

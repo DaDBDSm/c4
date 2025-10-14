@@ -158,6 +158,12 @@ impl C4 for C4Handler {
         let bucket_name = object_id.bucket_name.clone();
         let key = object_id.object_key.clone();
 
+        // Check bucket existence first
+        if !self.c4_storage.bucket_exists(&bucket_name).await
+            .map_err(|_| Status::internal("storage error"))? {
+            return Err(Status::not_found(format!("bucket not found: {bucket_name}")));
+        }
+
         // Create a static stream by cloning the storage and moving it into the stream
         let storage = self.c4_storage.clone();
         let stream = stream! {
@@ -171,8 +177,16 @@ impl C4 for C4Handler {
                         }
                     }
                 }
-                Err(_e) => {
-                    yield Err(Status::internal("storage error"));
+                Err(e) => match e {
+                    StorageError::ObjectNotFound { bucket, key } => {
+                        yield Err(Status::not_found(format!("not found {bucket}/{key}")));
+                    }
+                    StorageError::BucketNotFound(bucket) => {
+                        yield Err(Status::not_found(format!("bucket not found: {bucket}")));
+                    }
+                    _ => {
+                        yield Err(Status::internal("storage error"));
+                    }
                 }
             }
         };
@@ -198,6 +212,9 @@ impl C4 for C4Handler {
             Err(e) => match e {
                 StorageError::ObjectNotFound { bucket, key } => {
                     Err(Status::not_found(format!("not found {bucket}/{key}")))
+                }
+                StorageError::BucketNotFound(bucket) => {
+                    Err(Status::not_found(format!("bucket not found: {bucket}")))
                 }
                 StorageError::InvalidInput(msg) => Err(Status::invalid_argument(msg)),
                 StorageError::IoError(_) => Err(Status::internal("internal io error")),
@@ -242,6 +259,9 @@ impl C4 for C4Handler {
                 StorageError::ObjectNotFound { bucket, key } => {
                     Err(Status::not_found(format!("not found {bucket}/{key}")))
                 }
+                StorageError::BucketNotFound(bucket) => {
+                    Err(Status::not_found(format!("bucket not found: {bucket}")))
+                }
                 StorageError::InvalidInput(msg) => Err(Status::invalid_argument(msg)),
                 StorageError::IoError(_) => Err(Status::internal("internal io error")),
                 _ => Err(Status::internal("internal error")),
@@ -279,6 +299,12 @@ impl C4 for C4Handler {
             .await
         {
             Err(e) => match e {
+                StorageError::ObjectNotFound { bucket, key } => {
+                    Err(Status::not_found(format!("not found {bucket}/{key}")))
+                }
+                StorageError::BucketNotFound(bucket) => {
+                    Err(Status::not_found(format!("bucket not found: {bucket}")))
+                }
                 StorageError::InvalidInput(msg) => Err(Status::invalid_argument(msg)),
                 StorageError::IoError(_) => Err(Status::internal("internal io error")),
                 _ => Err(Status::internal("internal error")),

@@ -1,35 +1,41 @@
-use std::net::SocketAddr;
 use tempfile::TempDir;
-use tokio::time::{sleep, Duration};
-use tonic::transport::{Channel, Server};
+use tokio::time::{Duration, sleep};
 use tonic::Request;
+use tonic::transport::{Channel, Server};
 
 use db::api::grpc::C4Handler;
-use db::storage::simple::file::FileManager;
 use db::storage::simple::ObjectStorageSimple;
+use db::storage::simple::file::FileManager;
 use grpc_server::object_storage::c4_client::C4Client;
 use grpc_server::object_storage::{
-    CreateBucketRequest, DeleteBucketRequest, DeleteObjectRequest, GetObjectRequest, HeadObjectRequest,
-    ListBucketsRequest, ListObjectsRequest, ObjectId, PutObjectRequest,
+    CreateBucketRequest, DeleteBucketRequest, DeleteObjectRequest, GetObjectRequest,
+    HeadObjectRequest, ListBucketsRequest, ListObjectsRequest, ObjectId, PutObjectRequest,
 };
 
 async fn create_test_server() -> (C4Client<Channel>, TempDir) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let storage = ObjectStorageSimple {
         base_dir: temp_dir.path().to_path_buf(),
-        file_manager: FileManager::new(10 * 1024 * 1024, 1024),
+        file_manager: FileManager::new(10 * 1024 * 1024, 1024 * 1024),
     };
 
-    let handler = C4Handler { c4_storage: storage };
+    let handler = C4Handler {
+        c4_storage: storage,
+    };
 
-    // Start server on a fixed port for testing
-    let addr: SocketAddr = "127.0.0.1:50052".parse().unwrap();
-    
+    // Start server on a dynamic port for testing
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind to port");
+    let addr = listener.local_addr().expect("Failed to get local address");
+
     // Spawn server task
     tokio::spawn(async move {
         let _ = Server::builder()
-            .add_service(grpc_server::object_storage::c4_server::C4Server::new(handler))
-            .serve(addr)
+            .add_service(grpc_server::object_storage::c4_server::C4Server::new(
+                handler,
+            ))
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await;
     });
 
@@ -58,7 +64,11 @@ async fn test_create_and_list_buckets_grpc() {
             bucket_name: bucket1.to_string(),
         }))
         .await;
-    assert!(response.is_ok(), "Failed to create bucket 1: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Failed to create bucket 1: {:?}",
+        response.err()
+    );
 
     // Create second bucket
     let response = client
@@ -66,7 +76,11 @@ async fn test_create_and_list_buckets_grpc() {
             bucket_name: bucket2.to_string(),
         }))
         .await;
-    assert!(response.is_ok(), "Failed to create bucket 2: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Failed to create bucket 2: {:?}",
+        response.err()
+    );
 
     // Try to create duplicate bucket (should fail)
     let response = client
@@ -128,7 +142,11 @@ async fn test_put_and_get_object_grpc() {
             bucket_name: bucket_name.to_string(),
         }))
         .await;
-    assert!(response.is_ok(), "Failed to create bucket: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Failed to create bucket: {:?}",
+        response.err()
+    );
 
     // Put object
     let stream = tokio_stream::iter(vec![
@@ -141,9 +159,11 @@ async fn test_put_and_get_object_grpc() {
             )),
         },
         PutObjectRequest {
-            req: Some(grpc_server::object_storage::put_object_request::Req::ObjectPart(
-                test_data.to_vec(),
-            )),
+            req: Some(
+                grpc_server::object_storage::put_object_request::Req::ObjectPart(
+                    test_data.to_vec(),
+                ),
+            ),
         },
     ]);
 
@@ -197,32 +217,36 @@ async fn test_list_objects_grpc() {
             bucket_name: bucket_name.to_string(),
         }))
         .await;
-    assert!(response.is_ok(), "Failed to create bucket: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Failed to create bucket: {:?}",
+        response.err()
+    );
 
     // Put multiple objects
-    for (i, object_name) in objects.iter().enumerate() {
+    for object_name in objects {
         let test_data = format!("Data for {}", object_name).into_bytes();
-    let stream = tokio_stream::iter(vec![
-        PutObjectRequest {
+        let stream = tokio_stream::iter(vec![
+            PutObjectRequest {
                 req: Some(grpc_server::object_storage::put_object_request::Req::Id(
                     ObjectId {
                         bucket_name: bucket_name.to_string(),
                         object_key: object_name.to_string(),
                     },
                 )),
-        },
-        PutObjectRequest {
-                req: Some(grpc_server::object_storage::put_object_request::Req::ObjectPart(
-                    test_data,
-                )),
-        },
-    ]);
+            },
+            PutObjectRequest {
+                req: Some(
+                    grpc_server::object_storage::put_object_request::Req::ObjectPart(test_data),
+                ),
+            },
+        ]);
 
         let response = client
             .put_object(Request::new(stream))
             .await
             .expect(&format!("Failed to put object {}", object_name));
-        
+
         assert!(response.get_ref().metadata.is_some());
     }
 
@@ -255,7 +279,10 @@ async fn test_list_objects_grpc() {
 
     let metadata_list = &response.get_ref().metadata;
     assert_eq!(metadata_list.len(), 1);
-    assert_eq!(metadata_list[0].id.as_ref().unwrap().object_key, "prefix_object.txt");
+    assert_eq!(
+        metadata_list[0].id.as_ref().unwrap().object_key,
+        "prefix_object.txt"
+    );
 
     // Test pagination
     let response = client
@@ -294,7 +321,11 @@ async fn test_head_object_grpc() {
             bucket_name: bucket_name.to_string(),
         }))
         .await;
-    assert!(response.is_ok(), "Failed to create bucket: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Failed to create bucket: {:?}",
+        response.err()
+    );
 
     // Put object
     let stream = tokio_stream::iter(vec![
@@ -307,9 +338,11 @@ async fn test_head_object_grpc() {
             )),
         },
         PutObjectRequest {
-            req: Some(grpc_server::object_storage::put_object_request::Req::ObjectPart(
-                test_data.to_vec(),
-            )),
+            req: Some(
+                grpc_server::object_storage::put_object_request::Req::ObjectPart(
+                    test_data.to_vec(),
+                ),
+            ),
         },
     ]);
 
@@ -356,7 +389,11 @@ async fn test_delete_object_grpc() {
             bucket_name: bucket_name.to_string(),
         }))
         .await;
-    assert!(response.is_ok(), "Failed to create bucket: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Failed to create bucket: {:?}",
+        response.err()
+    );
 
     // Put object
     let stream = tokio_stream::iter(vec![
@@ -369,9 +406,11 @@ async fn test_delete_object_grpc() {
             )),
         },
         PutObjectRequest {
-            req: Some(grpc_server::object_storage::put_object_request::Req::ObjectPart(
-                test_data.to_vec(),
-            )),
+            req: Some(
+                grpc_server::object_storage::put_object_request::Req::ObjectPart(
+                    test_data.to_vec(),
+                ),
+            ),
         },
     ]);
 
@@ -400,7 +439,11 @@ async fn test_delete_object_grpc() {
             }),
         }))
         .await;
-    assert!(response.is_ok(), "Failed to delete object: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Failed to delete object: {:?}",
+        response.err()
+    );
 
     // Verify object no longer exists
     let response = client
@@ -434,7 +477,10 @@ async fn test_error_handling_grpc() {
             }),
         }))
         .await;
-    assert!(response.is_err(), "Getting object from non-existent bucket should fail");
+    assert!(
+        response.is_err(),
+        "Getting object from non-existent bucket should fail"
+    );
 
     // Test listing objects from non-existent bucket
     let response = client
@@ -446,7 +492,10 @@ async fn test_error_handling_grpc() {
             prefix: None,
         }))
         .await;
-    assert!(response.is_err(), "Listing objects from non-existent bucket should fail");
+    assert!(
+        response.is_err(),
+        "Listing objects from non-existent bucket should fail"
+    );
 
     // Test head object from non-existent bucket
     let response = client
@@ -457,7 +506,10 @@ async fn test_error_handling_grpc() {
             }),
         }))
         .await;
-    assert!(response.is_err(), "Head object from non-existent bucket should fail");
+    assert!(
+        response.is_err(),
+        "Head object from non-existent bucket should fail"
+    );
 
     // Test delete object from non-existent bucket
     let response = client
@@ -468,7 +520,10 @@ async fn test_error_handling_grpc() {
             }),
         }))
         .await;
-    assert!(response.is_err(), "Delete object from non-existent bucket should fail");
+    assert!(
+        response.is_err(),
+        "Delete object from non-existent bucket should fail"
+    );
 }
 
 #[tokio::test]
@@ -477,7 +532,7 @@ async fn test_large_object_streaming_grpc() {
 
     let bucket_name = "test-bucket";
     let object_key = "large-object.bin";
-    
+
     // Create large data (1MB)
     let large_data = vec![77u8; 1024 * 1024];
 
@@ -487,7 +542,11 @@ async fn test_large_object_streaming_grpc() {
             bucket_name: bucket_name.to_string(),
         }))
         .await;
-    assert!(response.is_ok(), "Failed to create bucket: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Failed to create bucket: {:?}",
+        response.err()
+    );
 
     // Put large object
     let stream = tokio_stream::iter(vec![
@@ -500,9 +559,11 @@ async fn test_large_object_streaming_grpc() {
             )),
         },
         PutObjectRequest {
-            req: Some(grpc_server::object_storage::put_object_request::Req::ObjectPart(
-                large_data.clone(),
-            )),
+            req: Some(
+                grpc_server::object_storage::put_object_request::Req::ObjectPart(
+                    large_data.clone(),
+                ),
+            ),
         },
     ]);
 

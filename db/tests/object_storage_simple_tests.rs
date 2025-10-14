@@ -13,7 +13,7 @@ async fn create_test_storage() -> (ObjectStorageSimple, TempDir) {
     let temp_dir: TempDir = TempDir::new().expect("Failed to create temp dir");
     let storage = ObjectStorageSimple {
         base_dir: temp_dir.path().to_path_buf(),
-        file_manager: FileManager::new(10 * 1024 * 1024, 1024),
+        file_manager: FileManager::new(10 * 1024 * 1024, 1024 * 1024),
     };
     (storage, temp_dir)
 }
@@ -23,7 +23,9 @@ fn cursor_to_stream(data: &[u8]) -> Box<dyn tokio_stream::Stream<Item = Vec<u8>>
     Box::new(stream)
 }
 
-async fn collect_stream_to_vec(mut stream: impl tokio_stream::Stream<Item = std::io::Result<Vec<u8>>> + Unpin) -> Vec<u8> {
+async fn collect_stream_to_vec(
+    mut stream: impl tokio_stream::Stream<Item = std::io::Result<Vec<u8>>> + Unpin,
+) -> Vec<u8> {
     let mut result = Vec::new();
     while let Some(chunk) = stream.next().await {
         match chunk {
@@ -152,10 +154,10 @@ async fn test_delete_bucket() {
         })
         .await
     {
-        Err(StorageError::IoError { .. }) => {}
+        Err(StorageError::BucketNotFound { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
-            stringify!(StorageError::IoError),
+            stringify!(StorageError::BucketNotFound),
             other
         ),
         Ok(_) => panic!("expected error, got Ok"),
@@ -584,10 +586,10 @@ async fn test_nonexistent_bucket_operations() {
         })
         .await
     {
-        Err(StorageError::IoError { .. }) => {}
+        Err(StorageError::BucketNotFound { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
-            stringify!(StorageError::IoError),
+            stringify!(StorageError::BucketNotFound),
             other
         ),
         Ok(_) => panic!("expected error, got Ok"),
@@ -600,10 +602,10 @@ async fn test_nonexistent_bucket_operations() {
         })
         .await
     {
-        Err(StorageError::ObjectNotFound { .. }) => {}
+        Err(StorageError::BucketNotFound { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
-            stringify!(StorageError::ObjectNotFound),
+            stringify!(StorageError::BucketNotFound),
             other
         ),
         Ok(_) => panic!("expected error, got Ok"),
@@ -616,10 +618,10 @@ async fn test_nonexistent_bucket_operations() {
         })
         .await
     {
-        Err(StorageError::ObjectNotFound { .. }) => {}
+        Err(StorageError::BucketNotFound { .. }) => {}
         Err(other) => panic!(
             "expected {}, got: {:?}",
-            stringify!(StorageError::ObjectNotFound),
+            stringify!(StorageError::BucketNotFound),
             other
         ),
         Ok(_) => panic!("expected error, got Ok"),

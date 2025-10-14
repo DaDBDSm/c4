@@ -48,6 +48,14 @@ impl ObjectStorageSimple {
             .and_then(|object_path| Ok(String::from(object_path)))
     }
 
+    pub async fn bucket_exists(&self, bucket_name: &BucketName) -> Result<bool, StorageError> {
+        let bucket_path = self.bucket_dir(bucket_name)?;
+        match tokio::fs::try_exists(&bucket_path).await {
+            Ok(exists) => Ok(exists),
+            Err(e) => Err(StorageError::IoError(e)),
+        }
+    }
+
     pub async fn get_object_stream(
         &self,
         bucket_name: BucketName,
@@ -59,6 +67,9 @@ impl ObjectStorageSimple {
         ),
         StorageError,
     > {
+        if !self.bucket_exists(&bucket_name).await? {
+            return Err(StorageError::BucketNotFound(bucket_name.clone()));
+        }
         let path = self.object_path(&bucket_name, &key)?;
 
         // Get the file stream using the existing function
@@ -77,11 +88,11 @@ impl ObjectStorageSimple {
         let header_size = ObjectHeader::SIZE;
         let mut header_bytes_read = 0;
         let mut _header_skipped = false;
-        
+
         // Use a different approach: read the header first, then stream the rest
         let mut chunks = Vec::new();
         let mut stream = raw_stream;
-        
+
         // Read chunks until we've skipped the header
         while header_bytes_read < header_size {
             match stream.next().await {
@@ -105,13 +116,14 @@ impl ObjectStorageSimple {
                 None => return Err(StorageError::Internal("File too short".to_string())),
             }
         }
-        
+
         // Create a stream from the remaining chunks plus the rest of the original stream
         let data_stream = tokio_stream::iter(chunks);
         let remaining_stream = stream.map(|chunk| chunk);
         let combined_stream = tokio_stream::StreamExt::chain(data_stream, remaining_stream);
 
-        let stream: Box<dyn Stream<Item = io::Result<Vec<u8>>> + Unpin + Send + Sync> = Box::new(combined_stream);
+        let stream: Box<dyn Stream<Item = io::Result<Vec<u8>>> + Unpin + Send + Sync> =
+            Box::new(combined_stream);
         let object_metadata = self.get_object_metadata(&path, &bucket_name, &key).await?;
 
         Ok((stream, object_metadata))
@@ -123,6 +135,10 @@ impl ObjectStorageSimple {
         bucket_name: &BucketName,
         key: &ObjectKey,
     ) -> Result<ObjectMetadata, StorageError> {
+        let file_metadata = tokio::fs::metadata(path)
+            .await
+            .map_err(StorageError::IoError)?;
+
         let mut object_reader = File::open(path).await.unwrap();
         let mut object_header_bytes = [0u8; ObjectHeader::SIZE];
         object_reader
@@ -134,11 +150,6 @@ impl ObjectStorageSimple {
         if object_header.magic != OBJECT_MAGIC {
             return Err(StorageError::Internal("Invalid object magic".to_string()));
         };
-
-        let file_metadata = object_reader
-            .metadata()
-            .await
-            .map_err(StorageError::IoError)?;
 
         // Calculate the actual object size (file size minus header)
         let actual_size = file_metadata.len() - ObjectHeader::SIZE as u64;
@@ -175,9 +186,9 @@ impl ObjectStorage for ObjectStorageSimple {
             .map_err(StorageError::IoError)?;
 
         buckets.sort();
-        let start = dto.offset.unwrap_or(DEFAULT_LIMIT) as usize;
+        let start = dto.offset.unwrap_or(0) as usize;
         let end = std::cmp::min(
-            start.saturating_add(dto.limit.unwrap_or(0) as usize),
+            start.saturating_add(dto.limit.unwrap_or(DEFAULT_LIMIT) as usize),
             buckets.len(),
         );
         if start >= buckets.len() {
@@ -187,6 +198,10 @@ impl ObjectStorage for ObjectStorageSimple {
     }
 
     async fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError> {
+        if dto.bucket_name.len() < 1 {
+            return Err(StorageError::InvalidInput("Empty bucket name".to_string()));
+        }
+
         self.file_manager
             .delete_dir(&self.bucket_dir(&dto.bucket_name)?)
             .await
@@ -197,6 +212,9 @@ impl ObjectStorage for ObjectStorageSimple {
         &self,
         dto: &mut crate::storage::PutObjectDTO,
     ) -> Result<ObjectMetadata, StorageError> {
+        if !self.bucket_exists(&dto.bucket_name).await? {
+            return Err(StorageError::BucketNotFound(dto.bucket_name.clone()));
+        }
         let object_path = self.object_path(&dto.bucket_name, &dto.key)?;
 
         let object_header = ObjectHeader {
@@ -234,7 +252,9 @@ impl ObjectStorage for ObjectStorageSimple {
         &self,
         dto: &GetObjectDTO,
     ) -> Result<impl Stream<Item = io::Result<Vec<u8>>>, StorageError> {
-        let (stream, _) = self.get_object_stream(dto.bucket_name.clone(), dto.key.clone()).await?;
+        let (stream, _) = self
+            .get_object_stream(dto.bucket_name.clone(), dto.key.clone())
+            .await?;
         Ok(stream)
     }
 
@@ -242,6 +262,9 @@ impl ObjectStorage for ObjectStorageSimple {
         &self,
         dto: &ListObjectsDTO,
     ) -> Result<Vec<ObjectMetadata>, StorageError> {
+        if !self.bucket_exists(&dto.bucket_name).await? {
+            return Err(StorageError::BucketNotFound(dto.bucket_name.clone()));
+        }
         let object_keys = self
             .file_manager
             .list_dir(&self.bucket_dir(&dto.bucket_name)?)
@@ -282,10 +305,16 @@ impl ObjectStorage for ObjectStorageSimple {
     }
 
     async fn head_object(&self, dto: &HeadObjectDTO) -> Result<ObjectMetadata, StorageError> {
-        Ok(self.get_object_stream(dto.bucket_name.clone(), dto.key.clone()).await?.1)
+        Ok(self
+            .get_object_stream(dto.bucket_name.clone(), dto.key.clone())
+            .await?
+            .1)
     }
 
     async fn delete_object(&self, dto: &DeleteObjectDTO) -> Result<(), StorageError> {
+        if !self.bucket_exists(&dto.bucket_name).await? {
+            return Err(StorageError::BucketNotFound(dto.bucket_name.clone()));
+        }
         self.file_manager
             .delete_file(&self.object_path(&dto.bucket_name, &dto.key)?)
             .await
