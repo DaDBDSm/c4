@@ -4,6 +4,7 @@ use crate::storage::{
     CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, HeadObjectDTO, ListBucketsDTO,
     ListObjectsDTO, ObjectStorage, SortingOrder,
 };
+use async_stream::stream;
 use grpc_server::object_storage::c4_server::C4;
 use grpc_server::object_storage::put_object_request;
 use grpc_server::object_storage::{
@@ -16,7 +17,6 @@ use std::pin::Pin;
 use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
-use async_stream::stream;
 
 pub struct C4Handler {
     pub c4_storage: storage::simple::ObjectStorageSimple,
@@ -158,13 +158,17 @@ impl C4 for C4Handler {
         let bucket_name = object_id.bucket_name.clone();
         let key = object_id.object_key.clone();
 
-        // Check bucket existence first
-        if !self.c4_storage.bucket_exists(&bucket_name).await
-            .map_err(|_| Status::internal("storage error"))? {
-            return Err(Status::not_found(format!("bucket not found: {bucket_name}")));
+        if !self
+            .c4_storage
+            .bucket_exists(&bucket_name)
+            .await
+            .map_err(|_| Status::internal("storage error"))?
+        {
+            return Err(Status::not_found(format!(
+                "bucket not found: {bucket_name}"
+            )));
         }
 
-        // Create a static stream by cloning the storage and moving it into the stream
         let storage = self.c4_storage.clone();
         let stream = stream! {
             match storage.get_object_stream(bucket_name, key).await {

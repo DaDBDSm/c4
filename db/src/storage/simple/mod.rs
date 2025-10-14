@@ -72,7 +72,6 @@ impl ObjectStorageSimple {
         }
         let path = self.object_path(&bucket_name, &key)?;
 
-        // Get the file stream using the existing function
         let raw_stream = match self.file_manager.stream_file(&path).await {
             Ok(s) => s,
             Err(e) if e.kind() == ErrorKind::NotFound => {
@@ -84,27 +83,22 @@ impl ObjectStorageSimple {
             Err(e) => return Err(StorageError::IoError(e)),
         };
 
-        // Skip the header by reading it first, then stream the rest
         let header_size = ObjectHeader::SIZE;
         let mut header_bytes_read = 0;
         let mut _header_skipped = false;
 
-        // Use a different approach: read the header first, then stream the rest
         let mut chunks = Vec::new();
         let mut stream = raw_stream;
 
-        // Read chunks until we've skipped the header
         while header_bytes_read < header_size {
             match stream.next().await {
                 Some(Ok(chunk)) => {
                     if header_bytes_read + chunk.len() <= header_size {
-                        // This entire chunk is header
                         header_bytes_read += chunk.len();
                         if header_bytes_read == header_size {
                             _header_skipped = true;
                         }
                     } else {
-                        // This chunk contains both header and data
                         let data_start = header_size - header_bytes_read;
                         let data_chunk = chunk[data_start..].to_vec();
                         chunks.push(Ok(data_chunk));
@@ -117,7 +111,6 @@ impl ObjectStorageSimple {
             }
         }
 
-        // Create a stream from the remaining chunks plus the rest of the original stream
         let data_stream = tokio_stream::iter(chunks);
         let remaining_stream = stream.map(|chunk| chunk);
         let combined_stream = tokio_stream::StreamExt::chain(data_stream, remaining_stream);
@@ -151,7 +144,6 @@ impl ObjectStorageSimple {
             return Err(StorageError::Internal("Invalid object magic".to_string()));
         };
 
-        // Calculate the actual object size (file size minus header)
         let actual_size = file_metadata.len() - ObjectHeader::SIZE as u64;
 
         Ok(ObjectMetadata {
