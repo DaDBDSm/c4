@@ -59,7 +59,9 @@ impl C4 for C4Handler {
         {
             Err(e) => match e {
                 StorageError::InvalidInput(msg) => Err(Status::invalid_argument(msg)),
-                StorageError::IoError(_) => Err(Status::internal("internal io error")),
+                StorageError::IoError(_) => Ok(Response::new(ListBucketsResponse {
+                    bucket_names: Vec::new(),
+                })),
                 _ => Err(Status::internal("internal error")),
             },
             Ok(buckets) => Ok(Response::new(ListBucketsResponse {
@@ -123,11 +125,26 @@ impl C4 for C4Handler {
             stream: Box::new(byte_stream),
         };
 
-        let metadata = self
-            .c4_storage
-            .put_object(&mut dto)
-            .await
-            .map_err(|_e| Status::internal("storage error"))?;
+        let metadata = match self.c4_storage.put_object(&mut dto).await {
+            Ok(metadata) => metadata,
+            Err(e) => match e {
+                StorageError::ObjectNotFound { bucket, key } => {
+                    return Err(Status::not_found(format!("not found {bucket}/{key}")));
+                }
+                StorageError::BucketNotFound(bucket) => {
+                    return Err(Status::not_found(format!("bucket not found: {bucket}")));
+                }
+                StorageError::InvalidInput(msg) => {
+                    return Err(Status::invalid_argument(msg));
+                }
+                StorageError::IoError(_) => {
+                    return Err(Status::internal("internal io error"));
+                }
+                _ => {
+                    return Err(Status::internal("internal error"));
+                }
+            },
+        };
 
         let response = PutObjectResponse {
             metadata: Some(ObjectMetadata {

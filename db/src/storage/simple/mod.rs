@@ -157,6 +157,12 @@ impl ObjectStorageSimple {
 
 impl ObjectStorage for ObjectStorageSimple {
     async fn create_bucket(&self, dto: &CreateBucketDTO) -> Result<(), StorageError> {
+        if dto.bucket_name.contains("..") || dto.bucket_name.starts_with("/") {
+            return Err(StorageError::InvalidInput(
+                "incorrect bucket name".to_string(),
+            ));
+        }
+
         match self
             .file_manager
             .create_dir(&self.bucket_dir(&dto.bucket_name)?)
@@ -192,6 +198,11 @@ impl ObjectStorage for ObjectStorageSimple {
     async fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError> {
         if dto.bucket_name.len() < 1 {
             return Err(StorageError::InvalidInput("Empty bucket name".to_string()));
+        }
+        if dto.bucket_name.contains("..") || dto.bucket_name.starts_with("/") {
+            return Err(StorageError::InvalidInput(
+                "incorrect bucket name".to_string(),
+            ));
         }
 
         self.file_manager
