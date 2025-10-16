@@ -215,6 +215,20 @@ impl ObjectStorage for ObjectStorageSimple {
         &self,
         dto: &mut crate::storage::PutObjectDTO,
     ) -> Result<ObjectMetadata, StorageError> {
+        if dto.bucket_name.len() < 1 {
+            return Err(StorageError::InvalidInput("Empty bucket name".to_string()));
+        }
+        if dto.bucket_name.contains("..") || dto.bucket_name.starts_with("/") {
+            return Err(StorageError::InvalidInput(
+                "incorrect bucket name".to_string(),
+            ));
+        }
+        if dto.key.contains("..") || dto.key.contains("/") {
+            return Err(StorageError::InvalidInput(
+                "incorrect object key".to_string(),
+            ));
+        }
+
         if !self.bucket_exists(&dto.bucket_name).await? {
             return Err(StorageError::BucketNotFound(dto.bucket_name.clone()));
         }
@@ -315,6 +329,20 @@ impl ObjectStorage for ObjectStorageSimple {
     }
 
     async fn delete_object(&self, dto: &DeleteObjectDTO) -> Result<(), StorageError> {
+        if dto.bucket_name.len() < 1 {
+            return Err(StorageError::InvalidInput("Empty bucket name".to_string()));
+        }
+        if dto.bucket_name.contains("..") || dto.bucket_name.starts_with("/") {
+            return Err(StorageError::InvalidInput(
+                "incorrect bucket name".to_string(),
+            ));
+        }
+        if dto.key.contains("..") || dto.key.contains("/") {
+            return Err(StorageError::InvalidInput(
+                "incorrect object key".to_string(),
+            ));
+        }
+
         if !self.bucket_exists(&dto.bucket_name).await? {
             return Err(StorageError::BucketNotFound(dto.bucket_name.clone()));
         }
