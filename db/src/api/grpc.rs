@@ -18,6 +18,7 @@ use tokio_stream::Stream;
 use tokio_stream::StreamExt;
 use tonic::{Request, Response, Status, Streaming};
 
+#[derive(Clone)]
 pub struct C4Handler {
     pub c4_storage: storage::simple::ObjectStorageSimple,
 }

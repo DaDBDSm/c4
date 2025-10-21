@@ -90,7 +90,7 @@ pub trait ObjectStorage {
 
     fn put_object(
         &self,
-        dto: &mut PutObjectDTO,
+        dto: PutObjectDTO,
     ) -> impl Future<Output = Result<ObjectMetadata, StorageError>> + Send;
 
     fn get_object(

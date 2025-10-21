@@ -1,17 +1,16 @@
-pub mod file;
-mod meta;
-
+mod chunk_file_storage;
+use regex::Regex;
 use tokio::fs::File;
 use tokio::io::{self, AsyncReadExt};
 use tokio_stream::{Stream, StreamExt};
 
 use crate::storage::errors::StorageError;
-use crate::storage::simple::file::FileManager;
-use crate::storage::simple::meta::{OBJECT_MAGIC, ObjectHeader};
+use crate::storage::simple::chunk_file_storage::PartitionedBytesStorage;
 use crate::storage::{
     BucketName, CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, GetObjectDTO, HeadObjectDTO,
     ListBucketsDTO, ListObjectsDTO, ObjectKey, ObjectMetadata, ObjectStorage, SortingOrder,
 };
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
@@ -19,11 +18,13 @@ use std::{
 use tokio::io::ErrorKind;
 
 const DEFAULT_LIMIT: u64 = 20;
+const OBJECT_CHUNK_SIZE: usize = 1024; // 1 kb
+const FILE_NAME_REGEX: &str = r"^[a-zA-Z0-9_]$";
 
 #[derive(Clone)]
 pub struct ObjectStorageSimple {
     pub base_dir: PathBuf,
-    pub file_manager: FileManager,
+    pub bytes_storage: PartitionedBytesStorage,
 }
 
 impl ObjectStorageSimple {
@@ -157,111 +158,50 @@ impl ObjectStorageSimple {
 
 impl ObjectStorage for ObjectStorageSimple {
     async fn create_bucket(&self, dto: &CreateBucketDTO) -> Result<(), StorageError> {
-        if dto.bucket_name.contains("..") || dto.bucket_name.starts_with("/") {
-            return Err(StorageError::InvalidInput(
-                "incorrect bucket name".to_string(),
-            ));
-        }
-
-        match self
-            .file_manager
-            .create_dir(&self.bucket_dir(&dto.bucket_name)?)
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                Err(StorageError::BucketAlreadyExists(dto.bucket_name.clone()))
-            }
-            Err(e) => Err(StorageError::IoError(e)),
-        }
+        todo!()
     }
 
     async fn list_buckets(&self, dto: &ListBucketsDTO) -> Result<Vec<BucketName>, StorageError> {
-        let mut buckets = self
-            .file_manager
-            .list_dir(&self.bucket_dir(&BucketName::new())?)
-            .await
-            .map_err(StorageError::IoError)?;
-
-        buckets.sort();
-        let start = dto.offset.unwrap_or(0) as usize;
-        let end = std::cmp::min(
-            start.saturating_add(dto.limit.unwrap_or(DEFAULT_LIMIT) as usize),
-            buckets.len(),
-        );
-        if start >= buckets.len() {
-            return Ok(Vec::new());
-        }
-        Ok(buckets[start..end].to_vec())
+        todo!()
     }
 
     async fn delete_bucket(&self, dto: &DeleteBucketDTO) -> Result<(), StorageError> {
-        if dto.bucket_name.len() < 1 {
-            return Err(StorageError::InvalidInput("Empty bucket name".to_string()));
-        }
-        if dto.bucket_name.contains("..") || dto.bucket_name.starts_with("/") {
-            return Err(StorageError::InvalidInput(
-                "incorrect bucket name".to_string(),
-            ));
-        }
-
-        self.file_manager
-            .delete_dir(&self.bucket_dir(&dto.bucket_name)?)
-            .await
-            .map_err(StorageError::IoError)
+        todo!()
     }
 
     async fn put_object(
         &self,
-        dto: &mut crate::storage::PutObjectDTO,
+        dto: crate::storage::PutObjectDTO,
     ) -> Result<ObjectMetadata, StorageError> {
-        if dto.bucket_name.len() < 1 {
-            return Err(StorageError::InvalidInput("Empty bucket name".to_string()));
-        }
-        if dto.bucket_name.contains("..") || dto.bucket_name.starts_with("/") {
+        if !file_name_is_correct(&dto.bucket_name) {
             return Err(StorageError::InvalidInput(
-                "incorrect bucket name".to_string(),
+                "Invalid bucket name".to_string(),
             ));
         }
-        if dto.key.contains("..") || dto.key.contains("/") {
+        if !file_name_is_correct(&dto.key) {
             return Err(StorageError::InvalidInput(
-                "incorrect object key".to_string(),
+                "Invalid bucket name".to_string(),
             ));
         }
 
         if !self.bucket_exists(&dto.bucket_name).await? {
             return Err(StorageError::BucketNotFound(dto.bucket_name.clone()));
         }
-        let object_path = self.object_path(&dto.bucket_name, &dto.key)?;
-
-        let object_header = ObjectHeader {
-            magic: OBJECT_MAGIC,
-            created_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as i64,
-        };
-        let object_header_bytes = object_header.to_bytes();
-
-        let object_size = match self
-            .file_manager
-            .create_file(&mut dto.stream, &object_header_bytes, &object_path)
+        let object_chunk_id = object_chunk_id(&dto.key, &dto.bucket_name);
+        let size = self
+            .bytes_storage
+            .save_chunk(dto.stream, object_chunk_id)
             .await
-        {
-            Ok(sz) => sz,
-            Err(e) => return Err(StorageError::IoError(e)),
-        };
-        if object_size < ObjectHeader::SIZE as u64 {
-            return Err(StorageError::Internal(
-                "Written object smaller than header".to_string(),
-            ));
-        }
+            .map_err(|_| StorageError::Internal("Error".to_string()))?;
 
         Ok(ObjectMetadata {
             bucket_name: dto.bucket_name.clone(),
             key: dto.key.clone(),
-            size: object_size - ObjectHeader::SIZE as u64,
-            created_at: object_header.created_at,
+            size: size,
+            created_at: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64,
         })
     }
 
@@ -269,9 +209,8 @@ impl ObjectStorage for ObjectStorageSimple {
         &self,
         dto: &GetObjectDTO,
     ) -> Result<impl Stream<Item = io::Result<Vec<u8>>>, StorageError> {
-        let (stream, _) = self
-            .get_object_stream(dto.bucket_name.clone(), dto.key.clone())
-            .await?;
+        let object_chunk_id = object_chunk_id(&dto.key, &dto.bucket_name);
+        let stream = self.bytes_storage.get_chunk(object_chunk_id).await?;
         Ok(stream)
     }
 
@@ -351,4 +290,19 @@ impl ObjectStorage for ObjectStorageSimple {
             .await
             .map_err(StorageError::IoError)
     }
+}
+
+fn file_name_is_correct(file_name: &str) -> bool {
+    Regex::new(FILE_NAME_REGEX).unwrap().is_match(file_name)
+}
+
+fn object_chunk_id(object_key: &ObjectKey, bucket_name: &BucketName) -> u64 {
+    let string = format!("{bucket_name}_{object_key}");
+    hash_string_64(&string)
+}
+
+fn hash_string_64(s: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
 }
