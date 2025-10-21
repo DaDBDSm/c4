@@ -3,6 +3,7 @@ use std::{
     io::SeekFrom,
     path::{Path, PathBuf},
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use tokio::{
@@ -19,6 +20,7 @@ struct ChunkMeta {
     offset: u64,
     length: u64,
     deleted: bool,
+    created_at: i64, // Unix timestamp in milliseconds
 }
 
 /// Partitioned, asynchronous, thread-safe bytes storage.
@@ -64,6 +66,14 @@ impl PartitionedBytesStorage {
     /// Path to partition file (synchronous)
     pub fn file_path(&self, partition: u32) -> PathBuf {
         self.base_dir.join(format!("part_{partition}.bin"))
+    }
+
+    /// Get current Unix timestamp in milliseconds
+    fn current_timestamp() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
     }
 
     /// Save a chunk provided as an async stream of `Vec<u8>`.
@@ -120,6 +130,7 @@ impl PartitionedBytesStorage {
                     offset,
                     length: total_len,
                     deleted: false,
+                    created_at: Self::current_timestamp(),
                 },
             );
         }
@@ -127,22 +138,14 @@ impl PartitionedBytesStorage {
         Ok(total_len)
     }
 
-    /// Return an async stream over the chunk bytes as `Vec<u8>` chunks.
-    /// The returned stream is `Send + Unpin`.
-    pub async fn get_chunk(
+    /// Get metadata for a specific chunk
+    pub async fn get_chunk_metadata(
         &self,
         chunk_id: u64,
-    ) -> Result<
-        Box<dyn Stream<Item = Vec<u8>> + Unpin + Send>,
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
+    ) -> Result<ChunkMetadata, Box<dyn std::error::Error + Send + Sync>> {
         let partition = self.partition_for(chunk_id);
         let part_idx = partition as usize;
-        let part_lock = self.partition_locks[part_idx].clone();
         let index_lock = self.indexes[part_idx].clone();
-
-        // Acquire read lock on partition to prevent GC (GC takes write lock)
-        let _part_read_guard = part_lock.read().await;
 
         // Read metadata for chunk
         let meta = {
@@ -159,16 +162,41 @@ impl PartitionedBytesStorage {
             return Err(format!("chunk {} deleted", chunk_id).into());
         }
 
+        Ok(ChunkMetadata {
+            chunk_id,
+            offset: meta.offset,
+            size: meta.length, // This is the chunk size without metadata
+            created_at: meta.created_at,
+            partition,
+        })
+    }
+
+    /// Return an async stream over the chunk bytes as `Vec<u8>` chunks along with metadata.
+    /// The returned stream is `Send + Unpin`.
+    pub async fn get_chunk(
+        &self,
+        chunk_id: u64,
+    ) -> Result<ChunkWithMetadata, Box<dyn std::error::Error + Send + Sync>> {
+        let metadata = self.get_chunk_metadata(chunk_id).await?;
+
+        let partition = self.partition_for(chunk_id);
+        let part_idx = partition as usize;
+        let part_lock = self.partition_locks[part_idx].clone();
+
+        // Acquire read lock on partition to prevent GC (GC takes write lock)
+        let _part_read_guard = part_lock.read().await;
+
         // Open the file and stream the bytes in frames.
         let path = self.file_path(partition);
         let mut file = File::open(&path).await?;
 
         // Seek to chunk offset
-        file.seek(SeekFrom::Start(meta.offset)).await?;
+        file.seek(SeekFrom::Start(metadata.offset)).await?;
 
         // Use channel to stream data out without blocking the caller.
         let (tx, rx) = mpsc::channel::<Vec<u8>>(2);
-        let length = meta.length;
+        let length = metadata.size;
+
         // Spawn a task that reads and sends frames; if it errors, it closes the channel.
         tokio::spawn(async move {
             let mut remaining = length;
@@ -195,7 +223,10 @@ impl PartitionedBytesStorage {
         });
 
         let stream = ReceiverStream::new(rx);
-        Ok(Box::new(stream))
+        Ok(ChunkWithMetadata {
+            metadata,
+            stream: Box::new(stream),
+        })
     }
 
     /// Mark a chunk deleted (logical delete).
@@ -258,48 +289,6 @@ impl PartitionedBytesStorage {
             .open(&tmp_path)
             .await?;
 
-        let mut new_index_map = HashMap::new();
-        let mut new_offset: u64 = 0;
-
-        for (id, meta) in entries.into_iter() {
-            if meta.deleted {
-                continue;
-            }
-            if meta.length == 0 {
-                // Keep zero-length chunks if any (still a valid entry)
-                new_index_map.insert(
-                    id,
-                    ChunkMeta {
-                        offset: new_offset,
-                        length: 0,
-                        deleted: false,
-                    },
-                );
-                continue;
-            }
-
-            // Read from old file at meta.offset
-            old_file.seek(SeekFrom::Start(meta.offset)).await?;
-            let mut remaining = meta.length;
-            let mut buffer = vec![0u8; 8 * 1024];
-
-            while remaining > 0 {
-                let to_read = std::cmp::min(remaining, buffer.len() as u64) as usize;
-                old_file.read_exact(&mut buffer[..to_read]).await?;
-                new_file.write_all(&buffer[..to_read]).await?;
-                new_offset = new_offset.wrapping_add(to_read as u64);
-                remaining -= to_read as u64;
-            }
-
-            // We recorded offsets by incrementing new_offset as we wrote; however,
-            // above we advanced new_offset while writing. We stored the wrong offsets.
-            // Fix by computing per-entry start offset differently.
-        }
-
-        // The loop above incremented new_offset as we wrote, but we didn't track per-entry start offsets.
-        // To fix cleanly, re-implement the copy loop tracking `entry_start` per entry:
-        // Rewind files and redo with correct offsets.
-
         // Rewind files
         new_file.set_len(0).await?;
         new_file.seek(SeekFrom::Start(0)).await?;
@@ -327,6 +316,7 @@ impl PartitionedBytesStorage {
                         offset: current_new_offset,
                         length: 0,
                         deleted: false,
+                        created_at: meta.created_at, // Preserve original creation time
                     },
                 );
                 continue;
@@ -354,6 +344,7 @@ impl PartitionedBytesStorage {
                     offset: entry_start,
                     length: meta.length,
                     deleted: false,
+                    created_at: meta.created_at, // Preserve original creation time
                 },
             );
         }
@@ -379,4 +370,20 @@ impl PartitionedBytesStorage {
         }
         Ok(())
     }
+}
+
+/// Public metadata for a chunk
+#[derive(Debug, Clone)]
+pub struct ChunkMetadata {
+    pub chunk_id: u64,
+    pub offset: u64,
+    pub size: u64,       // Chunk size in bytes (without metadata)
+    pub created_at: i64, // Unix timestamp in milliseconds
+    pub partition: u32,
+}
+
+/// Chunk data with metadata
+pub struct ChunkWithMetadata {
+    pub metadata: ChunkMetadata,
+    pub stream: Box<dyn Stream<Item = Vec<u8>> + Unpin + Send>,
 }
