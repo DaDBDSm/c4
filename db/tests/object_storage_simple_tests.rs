@@ -3,7 +3,8 @@ use tokio_stream::StreamExt;
 
 use db::storage::errors::StorageError;
 use db::storage::simple::ObjectStorageSimple;
-use db::storage::simple::file::FileManager;
+use db::storage::simple::buckets_metadata_storage::BucketsMetadataStorage;
+use db::storage::simple::chunk_file_storage::PartitionedBytesStorage;
 use db::storage::{
     CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, GetObjectDTO, HeadObjectDTO, ListBucketsDTO,
     ListObjectsDTO, ObjectStorage, PutObjectDTO, SortingOrder,
@@ -11,9 +12,18 @@ use db::storage::{
 
 async fn create_test_storage() -> (ObjectStorageSimple, TempDir) {
     let temp_dir: TempDir = TempDir::new().expect("Failed to create temp dir");
+    let base_dir = temp_dir.path().to_path_buf();
+
+    let bytes_storage = PartitionedBytesStorage::new(base_dir.join("data"), 4);
+    let buckets_metadata_storage =
+        BucketsMetadataStorage::new(base_dir.join("metadata.json").to_string_lossy().to_string())
+            .await
+            .expect("Failed to create buckets metadata storage");
+
     let storage = ObjectStorageSimple {
-        base_dir: temp_dir.path().to_path_buf(),
-        file_manager: FileManager::new(10 * 1024 * 1024, 1024 * 1024),
+        base_dir,
+        bytes_storage,
+        buckets_metadata_storage,
     };
     (storage, temp_dir)
 }
@@ -24,14 +34,11 @@ fn cursor_to_stream(data: &[u8]) -> Box<dyn tokio_stream::Stream<Item = Vec<u8>>
 }
 
 async fn collect_stream_to_vec(
-    mut stream: impl tokio_stream::Stream<Item = std::io::Result<Vec<u8>>> + Unpin,
+    mut stream: impl tokio_stream::Stream<Item = Vec<u8>> + Unpin,
 ) -> Vec<u8> {
     let mut result = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        match chunk {
-            Ok(data) => result.extend(data),
-            Err(e) => panic!("Stream error: {}", e),
-        }
+    while let Some(data) = stream.next().await {
+        result.extend(data);
     }
     result
 }
@@ -44,19 +51,19 @@ async fn test_create_and_list_buckets() {
     let bucket2 = "test-bucket-2".to_string();
 
     storage
-        .create_bucket(&CreateBucketDTO {
+        .create_bucket(CreateBucketDTO {
             bucket_name: bucket1.clone(),
         })
         .await
         .expect("Failed to create bucket 1");
     storage
-        .create_bucket(&CreateBucketDTO {
+        .create_bucket(CreateBucketDTO {
             bucket_name: bucket2.clone(),
         })
         .await
         .expect("Failed to create bucket 2");
     match storage
-        .create_bucket(&CreateBucketDTO {
+        .create_bucket(CreateBucketDTO {
             bucket_name: bucket2.clone(),
         })
         .await
@@ -71,7 +78,7 @@ async fn test_create_and_list_buckets() {
     };
 
     let buckets = storage
-        .list_buckets(&ListBucketsDTO {
+        .list_buckets(ListBucketsDTO {
             offset: Some(0),
             limit: Some(10),
         })
@@ -82,13 +89,13 @@ async fn test_create_and_list_buckets() {
     assert!(buckets.contains(&bucket2));
 
     storage
-        .delete_bucket(&DeleteBucketDTO {
+        .delete_bucket(DeleteBucketDTO {
             bucket_name: bucket1.clone(),
         })
         .await
         .expect("Failed to delete bucket");
     storage
-        .delete_bucket(&DeleteBucketDTO {
+        .delete_bucket(DeleteBucketDTO {
             bucket_name: bucket2.clone(),
         })
         .await
@@ -102,24 +109,24 @@ async fn test_delete_bucket() {
     let bucket_name = "test-bucket".to_string();
     let object_key = "test-object.txt".to_string();
     storage
-        .create_bucket(&CreateBucketDTO {
+        .create_bucket(CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
         .expect("Failed to create bucket");
 
-    let mut put_dto = PutObjectDTO {
+    let put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(b"test_data"),
     };
     storage
-        .put_object(&mut put_dto)
+        .put_object(put_dto)
         .await
         .expect("Failed to put object");
 
     let buckets = storage
-        .list_buckets(&ListBucketsDTO {
+        .list_buckets(ListBucketsDTO {
             offset: Some(0),
             limit: Some(10),
         })
@@ -129,14 +136,14 @@ async fn test_delete_bucket() {
     assert!(buckets.contains(&bucket_name));
 
     storage
-        .delete_bucket(&DeleteBucketDTO {
+        .delete_bucket(DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
         .expect("Failed to delete bucket");
 
     let buckets = storage
-        .list_buckets(&ListBucketsDTO {
+        .list_buckets(ListBucketsDTO {
             offset: Some(0),
             limit: Some(10),
         })
@@ -145,7 +152,7 @@ async fn test_delete_bucket() {
     assert_eq!(buckets.len(), 0);
 
     match storage
-        .list_objects(&ListObjectsDTO {
+        .list_objects(ListObjectsDTO {
             bucket_name: bucket_name.clone(),
             offset: Some(0),
             limit: Some(10),
@@ -173,28 +180,32 @@ async fn test_put_and_get_object() {
     let test_data = b"Hello, World!";
 
     storage
-        .create_bucket(&CreateBucketDTO {
+        .create_bucket(CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
         .expect("Failed to create bucket");
 
-    let mut put_dto = PutObjectDTO {
+    let put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(test_data),
     };
     let metadata = storage
-        .put_object(&mut put_dto)
+        .put_object(put_dto)
         .await
         .expect("Failed to put object");
     assert_eq!(metadata.bucket_name, bucket_name);
     assert_eq!(metadata.key, object_key);
     assert_eq!(metadata.size, test_data.len() as u64);
 
-    put_dto.stream = cursor_to_stream(test_data);
+    let put_dto = PutObjectDTO {
+        bucket_name: bucket_name.clone(),
+        key: object_key.clone(),
+        stream: cursor_to_stream(test_data),
+    };
     let metadata = storage
-        .put_object(&mut put_dto)
+        .put_object(put_dto)
         .await
         .expect("Failed to put object");
     assert_eq!(metadata.bucket_name, bucket_name);
@@ -206,7 +217,7 @@ async fn test_put_and_get_object() {
         key: object_key.clone(),
     };
     let stream = storage
-        .get_object(&get_dto)
+        .get_object(get_dto)
         .await
         .expect("Failed to get object");
 
@@ -214,7 +225,7 @@ async fn test_put_and_get_object() {
     assert_eq!(read_data, test_data);
 
     storage
-        .delete_bucket(&DeleteBucketDTO {
+        .delete_bucket(DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
@@ -230,24 +241,24 @@ async fn test_head_object() {
     let test_data = b"Hello, World!";
 
     storage
-        .create_bucket(&CreateBucketDTO {
+        .create_bucket(CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
         .expect("Failed to create bucket");
 
-    let mut put_dto = PutObjectDTO {
+    let put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(test_data),
     };
     storage
-        .put_object(&mut put_dto)
+        .put_object(put_dto)
         .await
         .expect("Failed to put object");
 
     let metadata = storage
-        .head_object(&HeadObjectDTO {
+        .head_object(HeadObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
@@ -258,7 +269,7 @@ async fn test_head_object() {
     assert_eq!(metadata.size, test_data.len() as u64);
 
     storage
-        .delete_bucket(&DeleteBucketDTO {
+        .delete_bucket(DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
@@ -274,24 +285,24 @@ async fn test_delete_object() {
     let test_data = b"Hello, World!";
 
     storage
-        .create_bucket(&CreateBucketDTO {
+        .create_bucket(CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
         .expect("Failed to create bucket");
 
-    let mut put_dto = PutObjectDTO {
+    let put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(test_data),
     };
     storage
-        .put_object(&mut put_dto)
+        .put_object(put_dto)
         .await
         .expect("Failed to put object");
 
     storage
-        .delete_object(&DeleteObjectDTO {
+        .delete_object(DeleteObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
@@ -299,7 +310,7 @@ async fn test_delete_object() {
         .expect("Failed to delete object");
 
     match storage
-        .head_object(&HeadObjectDTO {
+        .head_object(HeadObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
@@ -315,7 +326,7 @@ async fn test_delete_object() {
     };
 
     storage
-        .delete_bucket(&DeleteBucketDTO {
+        .delete_bucket(DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
@@ -330,7 +341,7 @@ async fn test_list_objects() {
     let test_objects = vec!["object1.txt", "object2.txt", "prefix_object.txt"];
 
     storage
-        .create_bucket(&CreateBucketDTO {
+        .create_bucket(CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
@@ -338,19 +349,19 @@ async fn test_list_objects() {
 
     for object_name in test_objects.iter() {
         let test_data = format!("Data for {}", object_name).into_bytes();
-        let mut put_dto = PutObjectDTO {
+        let put_dto = PutObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_name.to_string(),
             stream: cursor_to_stream(&test_data),
         };
         storage
-            .put_object(&mut put_dto)
+            .put_object(put_dto)
             .await
             .expect(&format!("Failed to put object {}", object_name));
     }
 
     let objects = storage
-        .list_objects(&ListObjectsDTO {
+        .list_objects(ListObjectsDTO {
             bucket_name: bucket_name.clone(),
             offset: Some(0),
             limit: Some(10),
@@ -364,7 +375,7 @@ async fn test_list_objects() {
     assert!(objects[1].key < objects[2].key);
 
     let prefixed_objects = storage
-        .list_objects(&ListObjectsDTO {
+        .list_objects(ListObjectsDTO {
             bucket_name: bucket_name.clone(),
             offset: Some(0),
             limit: Some(10),
@@ -377,7 +388,7 @@ async fn test_list_objects() {
     assert_eq!(prefixed_objects[0].key, "prefix_object.txt");
 
     let first_page = storage
-        .list_objects(&ListObjectsDTO {
+        .list_objects(ListObjectsDTO {
             bucket_name: bucket_name.clone(),
             offset: Some(0),
             limit: Some(2),
@@ -389,7 +400,7 @@ async fn test_list_objects() {
     assert_eq!(first_page.len(), 2);
 
     let second_page = storage
-        .list_objects(&ListObjectsDTO {
+        .list_objects(ListObjectsDTO {
             bucket_name: bucket_name.clone(),
             offset: Some(2),
             limit: Some(2),
@@ -401,7 +412,7 @@ async fn test_list_objects() {
     assert_eq!(second_page.len(), 1);
 
     let desc_objects = storage
-        .list_objects(&ListObjectsDTO {
+        .list_objects(ListObjectsDTO {
             bucket_name: bucket_name.clone(),
             offset: Some(0),
             limit: Some(10),
@@ -415,7 +426,7 @@ async fn test_list_objects() {
     assert!(desc_objects[1].key > desc_objects[2].key);
 
     storage
-        .delete_bucket(&DeleteBucketDTO {
+        .delete_bucket(DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
@@ -429,7 +440,7 @@ async fn test_bucket_pagination() {
     let bucket_names = vec!["bucket-a", "bucket-b", "bucket-c"];
     for bucket_name in &bucket_names {
         storage
-            .create_bucket(&CreateBucketDTO {
+            .create_bucket(CreateBucketDTO {
                 bucket_name: bucket_name.to_string(),
             })
             .await
@@ -437,7 +448,7 @@ async fn test_bucket_pagination() {
     }
 
     let first_page = storage
-        .list_buckets(&ListBucketsDTO {
+        .list_buckets(ListBucketsDTO {
             offset: Some(0),
             limit: Some(2),
         })
@@ -446,7 +457,7 @@ async fn test_bucket_pagination() {
     assert_eq!(first_page.len(), 2);
 
     let second_page = storage
-        .list_buckets(&ListBucketsDTO {
+        .list_buckets(ListBucketsDTO {
             offset: Some(2),
             limit: Some(2),
         })
@@ -455,7 +466,7 @@ async fn test_bucket_pagination() {
     assert_eq!(second_page.len(), 1);
 
     let empty_page = storage
-        .list_buckets(&ListBucketsDTO {
+        .list_buckets(ListBucketsDTO {
             offset: Some(10),
             limit: Some(5),
         })
@@ -465,7 +476,7 @@ async fn test_bucket_pagination() {
 
     for bucket_name in &bucket_names {
         storage
-            .delete_bucket(&DeleteBucketDTO {
+            .delete_bucket(DeleteBucketDTO {
                 bucket_name: bucket_name.to_string(),
             })
             .await
@@ -483,19 +494,19 @@ async fn test_large_object() {
     let large_data = vec![77u8; 1024 * 1024];
 
     storage
-        .create_bucket(&CreateBucketDTO {
+        .create_bucket(CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
         .expect("Failed to create bucket");
 
-    let mut put_dto = PutObjectDTO {
+    let put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(&large_data),
     };
     let metadata = storage
-        .put_object(&mut put_dto)
+        .put_object(put_dto)
         .await
         .expect("Failed to put large object");
     assert_eq!(metadata.size, large_data.len() as u64);
@@ -508,7 +519,7 @@ async fn test_large_object() {
         key: object_key.clone(),
     };
     let stream = storage
-        .get_object(&get_dto)
+        .get_object(get_dto)
         .await
         .expect("Failed to get large object");
 
@@ -516,7 +527,7 @@ async fn test_large_object() {
     assert_eq!(read_data.len(), large_data.len());
 
     storage
-        .delete_bucket(&DeleteBucketDTO {
+        .delete_bucket(DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
@@ -532,19 +543,19 @@ async fn test_empty_object() {
     let empty_data = b"";
 
     storage
-        .create_bucket(&CreateBucketDTO {
+        .create_bucket(CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
         .expect("Failed to create bucket");
 
-    let mut put_dto = PutObjectDTO {
+    let put_dto = PutObjectDTO {
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(empty_data),
     };
     let metadata = storage
-        .put_object(&mut put_dto)
+        .put_object(put_dto)
         .await
         .expect("Failed to put empty object");
     assert_eq!(metadata.size, 0);
@@ -554,7 +565,7 @@ async fn test_empty_object() {
         key: object_key.clone(),
     };
     let stream = storage
-        .get_object(&get_dto)
+        .get_object(get_dto)
         .await
         .expect("Failed to get empty object");
 
@@ -562,7 +573,7 @@ async fn test_empty_object() {
     assert_eq!(read_data.len(), 0);
 
     storage
-        .delete_bucket(&DeleteBucketDTO {
+        .delete_bucket(DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
@@ -577,7 +588,7 @@ async fn test_nonexistent_bucket_operations() {
     let object_key = "test-object.txt".to_string();
 
     match storage
-        .list_objects(&ListObjectsDTO {
+        .list_objects(ListObjectsDTO {
             bucket_name: bucket_name.clone(),
             offset: Some(0),
             limit: Some(10),
@@ -596,7 +607,7 @@ async fn test_nonexistent_bucket_operations() {
     };
 
     match storage
-        .get_object(&GetObjectDTO {
+        .get_object(GetObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
@@ -612,7 +623,7 @@ async fn test_nonexistent_bucket_operations() {
     };
 
     match storage
-        .head_object(&HeadObjectDTO {
+        .head_object(HeadObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
@@ -636,14 +647,14 @@ async fn test_nonexistent_object_operations() {
     let object_key = "nonexistent-object.txt".to_string();
 
     storage
-        .create_bucket(&CreateBucketDTO {
+        .create_bucket(CreateBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await
         .expect("Failed to create bucket");
 
     match storage
-        .get_object(&GetObjectDTO {
+        .get_object(GetObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
@@ -659,7 +670,7 @@ async fn test_nonexistent_object_operations() {
     };
 
     match storage
-        .head_object(&HeadObjectDTO {
+        .head_object(HeadObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
@@ -675,7 +686,7 @@ async fn test_nonexistent_object_operations() {
     };
 
     storage
-        .delete_object(&DeleteObjectDTO {
+        .delete_object(DeleteObjectDTO {
             bucket_name: bucket_name.clone(),
             key: object_key.clone(),
         })
@@ -683,7 +694,7 @@ async fn test_nonexistent_object_operations() {
         .expect("Delete nonexistent object should not error");
 
     storage
-        .delete_bucket(&DeleteBucketDTO {
+        .delete_bucket(DeleteBucketDTO {
             bucket_name: bucket_name.clone(),
         })
         .await

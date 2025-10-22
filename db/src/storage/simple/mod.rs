@@ -1,11 +1,6 @@
-mod buckets_metadata_model;
-mod buckets_metadata_storage;
-mod chunk_file_storage;
-
-use regex::Regex;
-use tokio::fs::File;
-use tokio::io::{self, AsyncReadExt};
-use tokio_stream::{Stream, StreamExt};
+pub mod buckets_metadata_model;
+pub mod buckets_metadata_storage;
+pub mod chunk_file_storage;
 
 use crate::storage::errors::StorageError;
 use crate::storage::simple::buckets_metadata_storage::BucketsMetadataStorage;
@@ -14,16 +9,16 @@ use crate::storage::{
     BucketName, CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, GetObjectDTO, HeadObjectDTO,
     ListBucketsDTO, ListObjectsDTO, ObjectKey, ObjectMetadata, ObjectStorage, SortingOrder,
 };
+use regex::Regex;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::{
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tokio::io::ErrorKind;
+use tokio_stream::Stream;
 
 const DEFAULT_LIMIT: u64 = 20;
-const OBJECT_CHUNK_SIZE: usize = 1024; // 1 kb
-const FILE_NAME_REGEX: &str = r"^[a-zA-Z0-9_]$";
+const FILE_NAME_REGEX: &str = r"^[a-zA-Z0-9_.-]+$";
 
 #[derive(Clone)]
 pub struct ObjectStorageSimple {
@@ -37,21 +32,38 @@ impl ObjectStorage for ObjectStorageSimple {
         self.buckets_metadata_storage
             .add_bucket(&dto.bucket_name)
             .await
-            .unwrap();
+            .map_err(|e| {
+                if e.to_string().contains("already exists") {
+                    StorageError::BucketAlreadyExists(dto.bucket_name.clone())
+                } else {
+                    StorageError::Internal(format!("Failed to create bucket: {}", e))
+                }
+            })?;
         Ok(())
     }
 
     async fn list_buckets(&self, dto: ListBucketsDTO) -> Result<Vec<BucketName>, StorageError> {
-        Ok(self.buckets_metadata_storage.list_buckets().await.unwrap())
-        // todo handle offset, limit, handle exepction correctly
+        let all_buckets = self
+            .buckets_metadata_storage
+            .list_buckets()
+            .await
+            .map_err(|e| StorageError::Internal(format!("Failed to list buckets: {}", e)))?;
+
+        let offset = dto.offset.unwrap_or(0) as usize;
+        let limit = dto.limit.unwrap_or(DEFAULT_LIMIT) as usize;
+
+        if offset >= all_buckets.len() {
+            return Ok(Vec::new());
+        }
+
+        Ok(all_buckets.into_iter().skip(offset).take(limit).collect())
     }
 
     async fn delete_bucket(&self, dto: DeleteBucketDTO) -> Result<(), StorageError> {
         self.buckets_metadata_storage
             .remove_bucket(&dto.bucket_name)
             .await
-            .unwrap();
-        // todo handle exception correctly
+            .map_err(|e| StorageError::Internal(format!("Failed to delete bucket: {}", e)))?;
         Ok(())
     }
 
@@ -65,9 +77,7 @@ impl ObjectStorage for ObjectStorageSimple {
             ));
         }
         if !file_name_is_correct(&dto.key) {
-            return Err(StorageError::InvalidInput(
-                "Invalid bucket name".to_string(),
-            ));
+            return Err(StorageError::InvalidInput("Invalid object key".to_string()));
         }
 
         if !self
@@ -85,13 +95,27 @@ impl ObjectStorage for ObjectStorageSimple {
             .await
             .map_err(|_| StorageError::Internal("Error".to_string()))?;
 
+        // Add object to metadata storage - if it already exists, remove it first then add it
+        // This handles the case where we're overwriting an existing object
+        let _ = self
+            .buckets_metadata_storage
+            .remove_object(&dto.bucket_name, &dto.key)
+            .await;
+
+        self.buckets_metadata_storage
+            .add_object(&dto.bucket_name, dto.key.clone())
+            .await
+            .map_err(|e| {
+                StorageError::Internal(format!("Failed to add object to metadata: {}", e))
+            })?;
+
         Ok(ObjectMetadata {
             bucket_name: dto.bucket_name.clone(),
             key: dto.key.clone(),
             size: size,
             created_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .map_err(|_| StorageError::Internal("System time error".to_string()))?
                 .as_millis() as i64,
         })
     }
@@ -100,14 +124,30 @@ impl ObjectStorage for ObjectStorageSimple {
         &self,
         dto: GetObjectDTO,
     ) -> Result<impl Stream<Item = Vec<u8>>, StorageError> {
+        if !self
+            .buckets_metadata_storage
+            .bucket_exists(&dto.bucket_name)
+            .await
+        {
+            return Err(StorageError::BucketNotFound(dto.bucket_name.clone()));
+        }
+
         let object_chunk_id = object_chunk_id(&dto.key, &dto.bucket_name);
-        let stream = self
+        let chunk_with_metadata = self
             .bytes_storage
             .get_chunk(object_chunk_id)
             .await
-            .unwrap()
-            .stream;
-        Ok(stream)
+            .map_err(|e| {
+                if e.to_string().contains("not found") {
+                    StorageError::ObjectNotFound {
+                        bucket: dto.bucket_name.clone(),
+                        key: dto.key.clone(),
+                    }
+                } else {
+                    StorageError::Internal(format!("Failed to get object: {}", e))
+                }
+            })?;
+        Ok(chunk_with_metadata.stream)
     }
 
     async fn list_objects(&self, dto: ListObjectsDTO) -> Result<Vec<ObjectMetadata>, StorageError> {
@@ -123,7 +163,7 @@ impl ObjectStorage for ObjectStorageSimple {
             .buckets_metadata_storage
             .list_objects(&dto.bucket_name)
             .await
-            .map_err(|_| StorageError::Internal("Error".to_string()))?; // todo handle correctly
+            .map_err(|e| StorageError::Internal(format!("Failed to list objects: {}", e)))?;
 
         if dto.offset.unwrap_or(0) as usize >= object_keys.len() {
             return Ok(Vec::new());
@@ -132,17 +172,21 @@ impl ObjectStorage for ObjectStorageSimple {
         let mut metas: Vec<ObjectMetadata> = Vec::new();
         for object_key in object_keys {
             if let Some(prefix) = &dto.prefix
-                && !object_key.starts_with(Some(prefix).unwrap())
+                && !object_key.starts_with(prefix)
             {
                 continue;
             }
 
-            // todo handle error
             let chunk_metadata = self
                 .bytes_storage
                 .get_chunk_metadata(object_chunk_id(&object_key, &dto.bucket_name))
                 .await
-                .unwrap();
+                .map_err(|e| {
+                    StorageError::Internal(format!(
+                        "Failed to get chunk metadata for object {}: {}",
+                        object_key, e
+                    ))
+                })?;
 
             let object_metadata = ObjectMetadata {
                 bucket_name: dto.bucket_name.to_string(),
@@ -169,11 +213,31 @@ impl ObjectStorage for ObjectStorageSimple {
     }
 
     async fn head_object(&self, dto: HeadObjectDTO) -> Result<ObjectMetadata, StorageError> {
+        if !self
+            .buckets_metadata_storage
+            .bucket_exists(&dto.bucket_name)
+            .await
+        {
+            return Err(StorageError::BucketNotFound(dto.bucket_name.clone()));
+        }
+
         let chunk_metadata = self
             .bytes_storage
             .get_chunk_metadata(object_chunk_id(&dto.key, &dto.bucket_name))
             .await
-            .unwrap(); // todo handle errors correctly
+            .map_err(|e| {
+                if e.to_string().contains("not found") || e.to_string().contains("deleted") {
+                    StorageError::ObjectNotFound {
+                        bucket: dto.bucket_name.clone(),
+                        key: dto.key.clone(),
+                    }
+                } else {
+                    StorageError::Internal(format!(
+                        "Failed to get chunk metadata for head object: {}",
+                        e
+                    ))
+                }
+            })?;
 
         let object_metadata = ObjectMetadata {
             bucket_name: dto.bucket_name.to_string(),
@@ -192,9 +256,7 @@ impl ObjectStorage for ObjectStorageSimple {
             ));
         }
         if !file_name_is_correct(&dto.key) {
-            return Err(StorageError::InvalidInput(
-                "Invalid bucket name".to_string(),
-            ));
+            return Err(StorageError::InvalidInput("Invalid object key".to_string()));
         }
 
         if !self
@@ -205,22 +267,26 @@ impl ObjectStorage for ObjectStorageSimple {
             return Err(StorageError::BucketNotFound(dto.bucket_name.clone()));
         }
 
-        self.buckets_metadata_storage
-            .remove_bucket(&dto.bucket_name)
-            .await
-            .unwrap();
+        // Try to remove object from metadata, but don't error if it doesn't exist
+        let _ = self
+            .buckets_metadata_storage
+            .remove_object(&dto.bucket_name, &dto.key)
+            .await;
 
         self.bytes_storage
             .delete_chunk(object_chunk_id(&dto.key, &dto.bucket_name))
             .await
-            .unwrap();
+            .map_err(|e| StorageError::Internal(format!("Failed to delete chunk: {}", e)))?;
 
         Ok(())
     }
 }
 
 fn file_name_is_correct(file_name: &str) -> bool {
-    Regex::new(FILE_NAME_REGEX).unwrap().is_match(file_name)
+    // This regex should always compile since it's a constant
+    Regex::new(FILE_NAME_REGEX)
+        .expect("Invalid FILE_NAME_REGEX constant")
+        .is_match(file_name)
 }
 
 fn object_chunk_id(object_key: &ObjectKey, bucket_name: &BucketName) -> u64 {

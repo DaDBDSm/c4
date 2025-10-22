@@ -1,4 +1,6 @@
 use db::api::grpc::C4Handler;
+use db::storage::simple::buckets_metadata_storage::BucketsMetadataStorage;
+use db::storage::simple::chunk_file_storage::PartitionedBytesStorage;
 use grpc_server::object_storage;
 
 use std::{error::Error, net::SocketAddr};
@@ -10,13 +12,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Running server on {addr}");
 
+    let base_dir = std::path::PathBuf::from("./tmp/c4_storage");
+
+    let bytes_storage = PartitionedBytesStorage::new(base_dir.join("data"), 4);
+    let buckets_metadata_storage =
+        BucketsMetadataStorage::new(base_dir.join("metadata.json").to_string_lossy().to_string())
+            .await
+            .expect("Failed to create buckets metadata storage");
+
     let handler = C4Handler {
         c4_storage: db::storage::simple::ObjectStorageSimple {
-            base_dir: std::path::PathBuf::from("./tmp/c4_storage"),
-            file_manager: db::storage::simple::file::FileManager::new(
-                10 * 1024 * 1024,
-                1024 * 1024,
-            ),
+            base_dir,
+            bytes_storage,
+            buckets_metadata_storage,
         },
     };
 

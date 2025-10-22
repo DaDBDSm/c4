@@ -1,7 +1,7 @@
 use crate::storage::errors::StorageError;
 use crate::storage::{self, PutObjectDTO};
 use crate::storage::{
-    CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, HeadObjectDTO, ListBucketsDTO,
+    CreateBucketDTO, DeleteBucketDTO, DeleteObjectDTO, GetObjectDTO, HeadObjectDTO, ListBucketsDTO,
     ListObjectsDTO, ObjectStorage, SortingOrder,
 };
 use async_stream::stream;
@@ -31,7 +31,7 @@ impl C4 for C4Handler {
     ) -> Result<Response<()>, Status> {
         match self
             .c4_storage
-            .create_bucket(&CreateBucketDTO {
+            .create_bucket(CreateBucketDTO {
                 bucket_name: request.get_ref().bucket_name.clone(),
             })
             .await
@@ -52,7 +52,7 @@ impl C4 for C4Handler {
     ) -> Result<Response<ListBucketsResponse>, Status> {
         match self
             .c4_storage
-            .list_buckets(&ListBucketsDTO {
+            .list_buckets(ListBucketsDTO {
                 limit: request.get_ref().limit,
                 offset: request.get_ref().offset,
             })
@@ -77,7 +77,7 @@ impl C4 for C4Handler {
     ) -> Result<Response<()>, Status> {
         match self
             .c4_storage
-            .delete_bucket(&DeleteBucketDTO {
+            .delete_bucket(DeleteBucketDTO {
                 bucket_name: request.get_ref().bucket_name.clone(),
             })
             .await
@@ -120,13 +120,13 @@ impl C4 for C4Handler {
             },
         });
 
-        let mut dto = PutObjectDTO {
+        let dto = PutObjectDTO {
             bucket_name: object_id.bucket_name,
             key: object_id.object_key,
             stream: Box::new(byte_stream),
         };
 
-        let metadata = match self.c4_storage.put_object(&mut dto).await {
+        let metadata = match self.c4_storage.put_object(dto).await {
             Ok(metadata) => metadata,
             Err(e) => match e {
                 StorageError::ObjectNotFound { bucket, key } => {
@@ -162,7 +162,7 @@ impl C4 for C4Handler {
     }
 
     type GetObjectStream =
-        Pin<Box<dyn Stream<Item = Result<GetObjectResponse, Status>> + Send + Sync + 'static>>;
+        Pin<Box<dyn Stream<Item = Result<GetObjectResponse, Status>> + Send + 'static>>;
 
     async fn get_object(
         &self,
@@ -178,9 +178,9 @@ impl C4 for C4Handler {
 
         if !self
             .c4_storage
+            .buckets_metadata_storage
             .bucket_exists(&bucket_name)
             .await
-            .map_err(|_| Status::internal("storage error"))?
         {
             return Err(Status::not_found(format!(
                 "bucket not found: {bucket_name}"
@@ -189,14 +189,14 @@ impl C4 for C4Handler {
 
         let storage = self.c4_storage.clone();
         let stream = stream! {
-            match storage.get_object_stream(bucket_name, key).await {
-                Ok((byte_stream, _metadata)) => {
+            match storage.get_object(GetObjectDTO {
+                bucket_name: bucket_name.clone(),
+                key: key.clone(),
+            }).await {
+                Ok(byte_stream) => {
                     let mut stream = byte_stream;
-                    while let Some(result) = stream.next().await {
-                        match result {
-                            Ok(data) => yield Ok(GetObjectResponse { object_part: data }),
-                            Err(e) => yield Err(Status::internal(format!("Stream error: {}", e))),
-                        }
+                    while let Some(data) = stream.next().await {
+                        yield Ok(GetObjectResponse { object_part: data });
                     }
                 }
                 Err(e) => match e {
@@ -222,7 +222,7 @@ impl C4 for C4Handler {
     ) -> Result<Response<ListObjectsResponse>, Status> {
         match self
             .c4_storage
-            .list_objects(&ListObjectsDTO {
+            .list_objects(ListObjectsDTO {
                 bucket_name: request.get_ref().bucket_name.clone(),
                 limit: request.get_ref().limit,
                 offset: request.get_ref().offset,
@@ -271,7 +271,7 @@ impl C4 for C4Handler {
 
         match self
             .c4_storage
-            .head_object(&HeadObjectDTO {
+            .head_object(HeadObjectDTO {
                 bucket_name: object_id.bucket_name.clone(),
                 key: object_id.object_key.clone(),
             })
@@ -314,7 +314,7 @@ impl C4 for C4Handler {
 
         match self
             .c4_storage
-            .delete_object(&DeleteObjectDTO {
+            .delete_object(DeleteObjectDTO {
                 bucket_name: object_id.bucket_name.clone(),
                 key: object_id.object_key.clone(),
             })
