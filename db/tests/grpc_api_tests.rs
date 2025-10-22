@@ -5,7 +5,8 @@ use tonic::transport::{Channel, Server};
 
 use db::api::grpc::C4Handler;
 use db::storage::simple::ObjectStorageSimple;
-use db::storage::simple::file::FileManager;
+use db::storage::simple::buckets_metadata_storage::BucketsMetadataStorage;
+use db::storage::simple::chunk_file_storage::PartitionedBytesStorage;
 use grpc_server::object_storage::c4_client::C4Client;
 use grpc_server::object_storage::{
     CreateBucketRequest, DeleteBucketRequest, DeleteObjectRequest, GetObjectRequest,
@@ -14,9 +15,18 @@ use grpc_server::object_storage::{
 
 async fn create_test_server() -> (C4Client<Channel>, TempDir) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let base_dir = temp_dir.path().to_path_buf();
+
+    let bytes_storage = PartitionedBytesStorage::new(base_dir.join("data"), 4);
+    let buckets_metadata_storage =
+        BucketsMetadataStorage::new(base_dir.join("metadata.json").to_string_lossy().to_string())
+            .await
+            .expect("Failed to create buckets metadata storage");
+
     let storage = ObjectStorageSimple {
-        base_dir: temp_dir.path().to_path_buf(),
-        file_manager: FileManager::new(10 * 1024 * 1024, 1024 * 1024),
+        base_dir,
+        bytes_storage,
+        buckets_metadata_storage,
     };
 
     let handler = C4Handler {
