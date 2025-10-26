@@ -1,23 +1,46 @@
+use clap::Parser;
 use db::api::grpc::C4Handler;
 use db::storage::simple::buckets_metadata_storage::BucketsMetadataStorage;
 use db::storage::simple::chunk_file_storage::PartitionedBytesStorage;
 use grpc_server::object_storage;
-
 use std::{error::Error, net::SocketAddr};
 use tonic::transport::Server;
+
+/// Storage node for distributed object storage
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Port to listen on
+    #[arg(short, long, default_value_t = 4000)]
+    port: u16,
+
+    /// Node ID for identification
+    #[arg(long)]
+    node_id: Option<String>,
+
+    /// Base directory for storage
+    #[arg(long, default_value = "tmp")]
+    base_dir: String,
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize logging
     env_logger::builder()
-        .filter_level(log::LevelFilter::Trace)
+        .filter_level(log::LevelFilter::Info)
         .init();
 
-    let addr: SocketAddr = "0.0.0.0:4000".parse().unwrap();
+    let args = Args::parse();
 
-    log::info!("Starting C4 server on {}", addr);
+    let addr: SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
 
-    let base_dir = std::path::PathBuf::from("C:\\Users\\199-4\\labs\\c4\\tmp"); // fixme use another path
+    if let Some(node_id) = &args.node_id {
+        log::info!("Starting C4 storage node {} on {}", node_id, addr);
+    } else {
+        log::info!("Starting C4 storage node on {}", addr);
+    }
+
+    let base_dir = std::path::PathBuf::from(&args.base_dir);
 
     let bytes_storage = PartitionedBytesStorage::new(base_dir.join("data"), 4);
     let buckets_metadata_storage =
