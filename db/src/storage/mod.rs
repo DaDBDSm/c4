@@ -1,6 +1,6 @@
 pub mod errors;
 pub mod simple;
-use tokio::io;
+use std::future::Future;
 use tokio_stream::Stream;
 
 use crate::storage::errors::StorageError;
@@ -75,41 +75,41 @@ pub struct ListObjectsDTO {
 pub trait ObjectStorage {
     fn create_bucket(
         &self,
-        dto: &CreateBucketDTO,
+        dto: CreateBucketDTO,
     ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     fn list_buckets(
         &self,
-        dto: &ListBucketsDTO,
+        dto: ListBucketsDTO,
     ) -> impl Future<Output = Result<Vec<BucketName>, StorageError>> + Send;
 
     fn delete_bucket(
         &self,
-        dto: &DeleteBucketDTO,
+        dto: DeleteBucketDTO,
     ) -> impl Future<Output = Result<(), StorageError>> + Send;
 
     fn put_object(
         &self,
-        dto: &mut PutObjectDTO,
+        dto: PutObjectDTO,
     ) -> impl Future<Output = Result<ObjectMetadata, StorageError>> + Send;
 
     fn get_object(
         &self,
-        dto: &GetObjectDTO,
-    ) -> impl Future<Output = Result<impl Stream<Item = io::Result<Vec<u8>>>, StorageError>> + Send;
+        dto: GetObjectDTO,
+    ) -> impl Future<Output = Result<impl Stream<Item = Vec<u8>>, StorageError>> + Send;
 
     fn list_objects(
         &self,
-        dto: &ListObjectsDTO,
+        dto: ListObjectsDTO,
     ) -> impl Future<Output = Result<Vec<ObjectMetadata>, StorageError>> + Send;
 
     fn head_object(
         &self,
-        dto: &HeadObjectDTO,
+        dto: HeadObjectDTO,
     ) -> impl Future<Output = Result<ObjectMetadata, StorageError>> + Send;
 
     fn delete_object(
         &self,
-        dto: &DeleteObjectDTO,
+        dto: DeleteObjectDTO,
     ) -> impl Future<Output = Result<(), StorageError>> + Send;
 }

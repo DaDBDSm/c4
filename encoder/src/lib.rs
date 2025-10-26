@@ -308,6 +308,24 @@ fn decode_value_without_type(
                 .map(Value::String)
                 .map_err(|_| DecodeError::InvalidUtf8String)
         }
+        Value::MESSAGE_ID => {
+            let mut count_buf = [0; 4];
+            read_exact_or_error(cursor, &mut count_buf, "field count")?;
+            let count = u32::from_be_bytes(count_buf);
+
+            let mut fields = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                let mut num_buf = [0; 4];
+                read_exact_or_error(cursor, &mut num_buf, "field number")?;
+                let number = u32::from_be_bytes(num_buf);
+                if number == 0 {
+                    return Err(DecodeError::InvalidFieldNumber);
+                }
+                let value = decode_value(cursor)?;
+                fields.push(Field { number, value });
+            }
+            Ok(Value::Message(fields))
+        }
         _ => Err(DecodeError::InvalidTypeId(type_id)),
     }
 }
