@@ -1,6 +1,6 @@
 pub mod errors;
 pub mod simple;
-use tokio::io;
+use std::future::Future;
 use tokio_stream::Stream;
 
 use crate::storage::errors::StorageError;

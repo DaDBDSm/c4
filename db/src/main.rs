@@ -8,11 +8,16 @@ use tonic::transport::Server;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Initialize logging
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Trace)
+        .init();
+
     let addr: SocketAddr = "0.0.0.0:4000".parse().unwrap();
 
-    println!("Running server on {addr}");
+    log::info!("Starting C4 server on {}", addr);
 
-    let base_dir = std::path::PathBuf::from("./tmp/c4_storage");
+    let base_dir = std::path::PathBuf::from("C:\\Users\\199-4\\labs\\c4\\tmp"); // fixme use another path
 
     let bytes_storage = PartitionedBytesStorage::new(base_dir.join("data"), 4);
     let buckets_metadata_storage =
