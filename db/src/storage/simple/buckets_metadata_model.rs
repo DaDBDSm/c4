@@ -20,8 +20,7 @@ impl BucketsMetadata {
             .collect();
 
         let top_level_fields = vec![Field {
-            number: 1, // buckets field
-            value: Value::List(bucket_values),
+            number: 1,            value: Value::List(bucket_values),
         }];
 
         encode_value(&Value::Message(top_level_fields))
@@ -36,12 +35,10 @@ impl BucketsMetadata {
 
         let fields = vec![
             Field {
-                number: 1, // name field
-                value: Value::String(bucket.name.clone()),
+                number: 1,                value: Value::String(bucket.name.clone()),
             },
             Field {
-                number: 2, // objects field
-                value: Value::List(object_values),
+                number: 2,                value: Value::List(object_values),
             },
         ];
 

@@ -20,7 +20,6 @@ fn test_consistent_hashing_distribution() {
 
     let ring = ConsistentHashRing::new(nodes, 100);
 
-    // Test multiple keys to ensure distribution
     let test_keys = vec![
         "bucket1/key1",
         "bucket1/key2",
@@ -40,7 +39,6 @@ fn test_consistent_hashing_distribution() {
         }
     }
 
-    // With 3 nodes and 100 virtual nodes, keys should be distributed across multiple nodes
     assert!(
         assigned_nodes.len() > 1,
         "Keys should be distributed across multiple nodes"
@@ -68,7 +66,6 @@ fn test_consistent_hashing_same_key_same_node() {
 
     let test_key = "consistent_test_bucket/consistent_test_key";
 
-    // Same key should always map to same node
     let node1 = ring.get_node(test_key);
     let node2 = ring.get_node(test_key);
     let node3 = ring.get_node(test_key);
@@ -120,18 +117,15 @@ fn test_virtual_node_count() {
     let virtual_nodes_per_node = 25;
     let ring = ConsistentHashRing::new(nodes, virtual_nodes_per_node);
 
-    assert_eq!(ring.virtual_node_count(), 50); // 2 nodes * 25 virtual nodes
-}
+    assert_eq!(ring.virtual_node_count(), 50);}
 
 #[test]
 fn test_key_based_on_bucket_and_object() {
-    // Test that the key generation logic works correctly
     let bucket_name = "test_bucket";
     let object_key = "test_object";
 
     let combined_key = format!("{}_{}", bucket_name, object_key);
 
-    // This should match the logic used in the master node
     assert_eq!(combined_key, "test_bucket_test_object");
 }
 
@@ -151,9 +145,7 @@ fn test_node_enumeration() {
     let ring = ConsistentHashRing::new(nodes, 10);
     let all_nodes = ring.get_nodes();
 
-    assert_eq!(all_nodes.len(), 20); // 2 nodes * 10 virtual nodes
-
-    // Should contain both node IDs
+    assert_eq!(all_nodes.len(), 20);
     let node_ids: HashSet<String> = all_nodes.iter().map(|n| n.id.clone()).collect();
     assert!(node_ids.contains("node1"));
     assert!(node_ids.contains("node2"));
@@ -180,13 +172,9 @@ fn test_different_keys_different_hashes() {
     let hash2 = ConsistentHashRing::hash_key(key2);
     let hash3 = ConsistentHashRing::hash_key(key3);
 
-    // It's very unlikely (but possible) that different keys produce same hash
-    // But with good distribution, they should be different
     let hashes = vec![hash1, hash2, hash3];
     let unique_hashes: HashSet<u64> = hashes.into_iter().collect();
 
-    // Most of the time, hashes should be different
-    // But we can't guarantee it, so we just test that the function works
     assert!(unique_hashes.len() >= 1);
     assert!(unique_hashes.len() <= 3);
 }

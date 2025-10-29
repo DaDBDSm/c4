@@ -17,7 +17,6 @@ pub struct ConsistentHashRing {
 }
 
 impl ConsistentHashRing {
-    /// Create a new consistent hash ring with the given nodes
     pub fn new(nodes: Vec<Node>, virtual_nodes_per_node: usize) -> Self {
         let mut ring = BTreeMap::new();
 
@@ -31,7 +30,6 @@ impl ConsistentHashRing {
         }
     }
 
-    /// Add a node to the ring with virtual nodes
     fn add_node_to_ring(
         ring: &mut BTreeMap<u64, Node>,
         node: &Node,
@@ -44,7 +42,6 @@ impl ConsistentHashRing {
         }
     }
 
-    /// Get the node responsible for the given key
     pub fn get_node(&self, key: &str) -> Option<&Node> {
         if self.ring.is_empty() {
             return None;
@@ -52,30 +49,24 @@ impl ConsistentHashRing {
 
         let hash = Self::hash_key(key);
 
-        // Find the first node with hash >= our key's hash
         let entry = self.ring.range(hash..).next();
 
-        // If we didn't find any node with hash >= our key's hash,
-        // wrap around to the first node in the ring
         match entry {
             Some((_, node)) => Some(node),
             None => self.ring.values().next(),
         }
     }
 
-    /// Hash a key using the default hasher
     pub fn hash_key(key: &str) -> u64 {
         let mut hasher = DefaultHasher::new();
         key.hash(&mut hasher);
         hasher.finish()
     }
 
-    /// Get all nodes in the ring
     pub fn get_nodes(&self) -> Vec<&Node> {
         self.ring.values().collect()
     }
 
-    /// Get the number of virtual nodes in the ring
     pub fn virtual_node_count(&self) -> usize {
         self.ring.len()
     }
@@ -107,8 +98,7 @@ mod tests {
         let nodes = create_test_nodes();
         let ring = ConsistentHashRing::new(nodes, 3);
 
-        assert_eq!(ring.virtual_node_count(), 9); // 3 nodes * 3 virtual nodes
-        assert_eq!(ring.get_nodes().len(), 9);
+        assert_eq!(ring.virtual_node_count(), 9);        assert_eq!(ring.get_nodes().len(), 9);
     }
 
     #[test]
@@ -122,7 +112,6 @@ mod tests {
         let nodes = create_test_nodes();
         let ring = ConsistentHashRing::new(nodes, 100);
 
-        // Test multiple keys to ensure they get distributed
         let keys = vec![
             "bucket1/key1",
             "bucket1/key2",
@@ -137,8 +126,6 @@ mod tests {
             }
         }
 
-        // With 3 nodes and 100 virtual nodes, keys should be distributed
-        // across multiple nodes
         assert!(assigned_nodes.len() > 1);
     }
 
@@ -151,7 +138,6 @@ mod tests {
         let node1 = ring.get_node(key);
         let node2 = ring.get_node(key);
 
-        // Same key should always map to same node
         assert_eq!(node1.map(|n| &n.id), node2.map(|n| &n.id));
     }
 

@@ -15,11 +15,9 @@ use tonic::{Request, Response, Status, Streaming};
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Port to listen on
     #[arg(short, long, default_value_t = 5000)]
     port: u16,
 
-    /// Storage nodes addresses (comma-separated)
     #[arg(
         short,
         long,
@@ -27,7 +25,6 @@ struct Args {
     )]
     nodes: String,
 
-    /// Virtual nodes per physical node
     #[arg(long, default_value_t = 100)]
     virtual_nodes: usize,
 }
@@ -47,10 +44,8 @@ impl MasterHandler {
             return Err("No storage nodes configured".into());
         }
 
-        // Create consistent hash ring
         let ring = ConsistentHashRing::new(nodes.clone(), virtual_nodes_per_node);
 
-        // Create client pool using the original nodes (not virtual nodes)
         let mut client_pool = HashMap::new();
         for node in nodes {
             let address = format!("http://{}", node.address);
@@ -87,8 +82,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let bucket_name = request.get_ref().bucket_name.clone();
         log::info!("Creating bucket: {}", bucket_name);
 
-        // For bucket operations, we need to create the bucket on all nodes
-        // since we don't know which nodes will store objects for this bucket
         let mut errors = Vec::new();
 
         for client in self.client_pool.values() {
@@ -124,7 +117,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
 
         log::info!("Listing buckets (limit: {:?}, offset: {:?})", limit, offset);
 
-        // Query all nodes and merge bucket lists
         let mut all_buckets = std::collections::HashSet::new();
         let mut errors = Vec::new();
 
@@ -151,11 +143,9 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             )));
         }
 
-        // Convert HashSet to sorted Vec for consistent ordering
         let mut sorted_buckets: Vec<String> = all_buckets.into_iter().collect();
         sorted_buckets.sort();
 
-        // Apply pagination
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.unwrap_or(20) as usize;
 
@@ -180,7 +170,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let bucket_name = request.get_ref().bucket_name.clone();
         log::info!("Deleting bucket: {}", bucket_name);
 
-        // Delete bucket from all nodes
         let mut errors = Vec::new();
 
         for client in self.client_pool.values() {
@@ -213,7 +202,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
     ) -> Result<Response<grpc_server::object_storage::PutObjectResponse>, Status> {
         let mut stream = request.into_inner();
 
-        // Read the first message to get object ID
         let first_msg = stream
             .message()
             .await
@@ -240,11 +228,9 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let object_key = object_id.object_key.clone();
         log::info!("Putting object: {}/{}", bucket_name, object_key);
 
-        // Route to appropriate storage node
         let key = Self::get_key_for_object(&bucket_name, &object_key);
         let client = self.get_client_for_key(&key).await?;
 
-        // Create a new stream that includes the first message
         let request_stream = async_stream::stream! {
             yield first_msg;
             while let Some(msg) = stream.message().await.transpose() {
@@ -282,7 +268,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let object_key = object_id.object_key.clone();
         log::info!("Getting object: {}/{}", bucket_name, object_key);
 
-        // Route to appropriate storage node
         let key = Self::get_key_for_object(&bucket_name, &object_key);
         let client = self.get_client_for_key(&key).await?;
 
@@ -318,7 +303,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
 
         log::info!("Listing objects in bucket: {}", bucket_name);
 
-        // For list operations, we need to query all nodes and merge results
         let mut all_objects = Vec::new();
         let mut errors = Vec::new();
 
@@ -371,7 +355,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let object_key = object_id.object_key.clone();
         log::info!("Head object: {}/{}", bucket_name, object_key);
 
-        // Route to appropriate storage node
         let key = Self::get_key_for_object(&bucket_name, &object_key);
         let client = self.get_client_for_key(&key).await?;
 
@@ -414,7 +397,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let object_key = object_id.object_key.clone();
         log::info!("Deleting object: {}/{}", bucket_name, object_key);
 
-        // Route to appropriate storage node
         let key = Self::get_key_for_object(&bucket_name, &object_key);
         let client = self.get_client_for_key(&key).await?;
 
@@ -448,7 +430,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Initialize logging
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .init();
@@ -459,7 +440,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     log::info!("Starting C4 master node on {}", addr);
 
-    // Parse storage nodes from command line arguments
     let nodes: Vec<Node> = args
         .nodes
         .split(',')

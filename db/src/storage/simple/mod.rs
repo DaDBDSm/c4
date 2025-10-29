@@ -152,8 +152,6 @@ impl ObjectStorage for ObjectStorageSimple {
 
         log::debug!("Successfully saved object data, size: {} bytes", size);
 
-        // Add object to metadata storage - if it already exists, remove it first then add it
-        // This handles the case where we're overwriting an existing object
         log::debug!(
             "Updating metadata for object {}/{}",
             dto.bucket_name,
@@ -358,7 +356,7 @@ impl ObjectStorage for ObjectStorageSimple {
             .bucket_exists(&dto.bucket_name)
             .await
         {
-            log::error!("Bucket not found: {}", dto.bucket_name);
+            log::info!("Bucket not found: {}", dto.bucket_name);
             return Err(StorageError::BucketNotFound(dto.bucket_name.clone()));
         }
 
@@ -430,7 +428,7 @@ impl ObjectStorage for ObjectStorageSimple {
             .bucket_exists(&dto.bucket_name)
             .await
         {
-            log::error!("Bucket not found: {}", dto.bucket_name);
+            log::info!("Bucket not found: {}", dto.bucket_name);
             return Err(StorageError::BucketNotFound(dto.bucket_name.clone()));
         }
 
@@ -442,7 +440,6 @@ impl ObjectStorage for ObjectStorageSimple {
             dto.key
         );
 
-        // Try to remove object from metadata, but don't error if it doesn't exist
         log::debug!(
             "Removing object from metadata: {}/{}",
             dto.bucket_name,
@@ -476,7 +473,6 @@ impl ObjectStorage for ObjectStorageSimple {
 }
 
 fn file_name_is_correct(file_name: &str) -> bool {
-    // This regex should always compile since it's a constant
     Regex::new(FILE_NAME_REGEX)
         .expect("Invalid FILE_NAME_REGEX constant")
         .is_match(file_name)

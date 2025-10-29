@@ -10,22 +10,18 @@ use tonic::transport::Server;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// Port to listen on
     #[arg(short, long, default_value_t = 4000)]
     port: u16,
 
-    /// Node ID for identification
     #[arg(long)]
     node_id: Option<String>,
 
-    /// Base directory for storage
     #[arg(long, default_value = "tmp")]
     base_dir: String,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Initialize logging
     env_logger::builder()
         .filter_level(log::LevelFilter::Info)
         .init();
