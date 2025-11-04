@@ -309,7 +309,7 @@ impl C4 for C4Handler {
             .await
         {
             Err(e) => {
-                log::error!(
+                log::info!(
                     "Failed to list objects in bucket '{}': {:?}",
                     bucket_name,
                     e

@@ -13,7 +13,6 @@ pub struct Node {
 #[derive(Debug, Clone)]
 pub struct ConsistentHashRing {
     ring: BTreeMap<u64, Node>,
-    virtual_nodes_per_node: usize,
 }
 
 impl ConsistentHashRing {
@@ -24,10 +23,7 @@ impl ConsistentHashRing {
             Self::add_node_to_ring(&mut ring, &node, virtual_nodes_per_node);
         }
 
-        Self {
-            ring,
-            virtual_nodes_per_node,
-        }
+        Self { ring }
     }
 
     fn add_node_to_ring(
@@ -98,7 +94,8 @@ mod tests {
         let nodes = create_test_nodes();
         let ring = ConsistentHashRing::new(nodes, 3);
 
-        assert_eq!(ring.virtual_node_count(), 9);        assert_eq!(ring.get_nodes().len(), 9);
+        assert_eq!(ring.virtual_node_count(), 9);
+        assert_eq!(ring.get_nodes().len(), 9);
     }
 
     #[test]
