@@ -2,9 +2,11 @@ use clap::Parser;
 use grpc_server::object_storage::c4_client::C4Client;
 use grpc_server::object_storage::{
     CreateBucketRequest, DeleteBucketRequest, DeleteObjectRequest, GetObjectRequest,
-    HeadObjectRequest, ListBucketsRequest, ListObjectsRequest, PutObjectRequest,
+    HeadObjectRequest, ListBucketsRequest, ListObjectsRequest, MigrationOperation,
+    MigrationPlanResponse, PutObjectRequest,
 };
 use master::hashing::consistent::{ConsistentHashRing, Node};
+use master::migration::migration_service::MigrationService;
 use std::collections::HashMap;
 use std::error::Error;
 use std::net::SocketAddr;
@@ -426,6 +428,56 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
     }
 
     type GetObjectStream = tonic::codec::Streaming<grpc_server::object_storage::GetObjectResponse>;
+
+    async fn get_migration_plan(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<MigrationPlanResponse>, Status> {
+        log::info!("Generating migration plan (dry-run)");
+
+        // Create migration service with the client pool
+        let migration_service = MigrationService::new(self.client_pool.clone());
+
+        // Generate migration plan
+        match migration_service.generate_migration_plan(&self.ring).await {
+            Ok(plan) => {
+                log::info!(
+                    "Migration plan generated: {} operations, {} unchanged objects, {} total objects",
+                    plan.operation_count(),
+                    plan.unchanged_objects,
+                    plan.total_objects
+                );
+
+                // Convert internal migration plan to gRPC response
+                let operations: Vec<MigrationOperation> = plan
+                    .operations
+                    .iter()
+                    .map(|op| MigrationOperation {
+                        prev_node: op.prev_node.clone(),
+                        new_node: op.new_node.clone(),
+                        object_key: op.object_key.clone(),
+                        bucket_name: op.bucket_name.clone(),
+                    })
+                    .collect();
+
+                let response = MigrationPlanResponse {
+                    operations,
+                    total_objects: plan.total_objects as u64,
+                    unchanged_objects: plan.unchanged_objects as u64,
+                    operation_count: plan.operation_count() as u64,
+                };
+
+                Ok(Response::new(response))
+            }
+            Err(e) => {
+                log::error!("Failed to generate migration plan: {}", e);
+                Err(Status::internal(format!(
+                    "Failed to generate migration plan: {}",
+                    e
+                )))
+            }
+        }
+    }
 }
 
 #[tokio::main]

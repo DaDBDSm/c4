@@ -10,8 +10,8 @@ use grpc_server::object_storage::put_object_request;
 use grpc_server::object_storage::{
     CreateBucketRequest, DeleteBucketRequest, DeleteObjectRequest, GetObjectRequest,
     GetObjectResponse, HeadObjectRequest, HeadObjectResponse, ListBucketsRequest,
-    ListBucketsResponse, ListObjectsRequest, ListObjectsResponse, ObjectId, ObjectMetadata,
-    PutObjectRequest, PutObjectResponse,
+    ListBucketsResponse, ListObjectsRequest, ListObjectsResponse, MigrationPlanResponse, ObjectId,
+    ObjectMetadata, PutObjectRequest, PutObjectResponse,
 };
 use std::pin::Pin;
 use tokio_stream::Stream;
@@ -451,5 +451,24 @@ impl C4 for C4Handler {
                 Ok(Response::new(()))
             }
         }
+    }
+
+    async fn get_migration_plan(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<MigrationPlanResponse>, Status> {
+        log::info!("Getting migration plan");
+
+        // For now, return an empty migration plan
+        // In a real implementation, this would generate a migration plan based on current state
+        let response = MigrationPlanResponse {
+            operations: Vec::new(),
+            total_objects: 0,
+            unchanged_objects: 0,
+            operation_count: 0,
+        };
+
+        log::info!("Returning empty migration plan");
+        Ok(Response::new(response))
     }
 }
