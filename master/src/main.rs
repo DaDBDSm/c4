@@ -2,8 +2,8 @@ use clap::Parser;
 use grpc_server::object_storage::c4_client::C4Client;
 use grpc_server::object_storage::{
     CreateBucketRequest, DeleteBucketRequest, DeleteObjectRequest, GetObjectRequest,
-    HeadObjectRequest, ListBucketsRequest, ListObjectsRequest, MigrationOperation,
-    MigrationPlanResponse, PutObjectRequest,
+    HeadObjectRequest, ListBucketsRequest, ListObjectsRequest, MigrationExecutionResponse,
+    MigrationOperation, MigrationPlanResponse, MigrationStatus, PutObjectRequest,
 };
 use master::hashing::consistent::{ConsistentHashRing, Node};
 use master::migration::migration_service::MigrationService;
@@ -473,6 +473,82 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                 log::error!("Failed to generate migration plan: {}", e);
                 Err(Status::internal(format!(
                     "Failed to generate migration plan: {}",
+                    e
+                )))
+            }
+        }
+    }
+
+    async fn execute_migration(
+        &self,
+        _request: Request<()>,
+    ) -> Result<Response<MigrationExecutionResponse>, Status> {
+        log::info!("Starting migration execution");
+
+        // Create migration service with the client pool
+        let migration_service = MigrationService::new(self.client_pool.clone());
+
+        // First generate the migration plan
+        let plan = match migration_service.generate_migration_plan(&self.ring).await {
+            Ok(plan) => plan,
+            Err(e) => {
+                log::error!("Failed to generate migration plan: {}", e);
+                return Err(Status::internal(format!(
+                    "Failed to generate migration plan: {}",
+                    e
+                )));
+            }
+        };
+
+        // Execute the migration plan
+        match migration_service.execute_migration(plan).await {
+            Ok(extended_plan) => {
+                // Convert internal migration status to gRPC status
+                let status = match extended_plan.status {
+                    master::migration::migration_plan::MigrationStatus::Pending => {
+                        MigrationStatus::Pending
+                    }
+                    master::migration::migration_plan::MigrationStatus::InProgress => {
+                        MigrationStatus::InProgress
+                    }
+                    master::migration::migration_plan::MigrationStatus::Completed => {
+                        MigrationStatus::Completed
+                    }
+                    master::migration::migration_plan::MigrationStatus::Failed(_) => {
+                        MigrationStatus::Failed
+                    }
+                    master::migration::migration_plan::MigrationStatus::Cancelled => {
+                        MigrationStatus::Cancelled
+                    }
+                };
+
+                let response = MigrationExecutionResponse {
+                    status: status as i32,
+                    completed_operations: extended_plan.progress.0 as u64,
+                    total_operations: extended_plan.progress.1 as u64,
+                    progress_percentage: extended_plan.progress_percentage(),
+                    message: match &extended_plan.status {
+                        master::migration::migration_plan::MigrationStatus::Failed(msg) => {
+                            msg.clone()
+                        }
+                        _ => String::new(),
+                    },
+                    started_at: extended_plan.started_at.unwrap_or(0),
+                    completed_at: extended_plan.completed_at.unwrap_or(0),
+                };
+
+                log::info!(
+                    "Migration execution completed: {} operations, {}% complete",
+                    extended_plan.progress.0,
+                    extended_plan.progress_percentage()
+                );
+
+                Ok(Response::new(response))
+            }
+            Err(e) => {
+                log::error!("Failed to execute migration: {}", e);
+                Err(Status::internal(format!(
+                    "Failed to execute migration: {}",
                     e
                 )))
             }

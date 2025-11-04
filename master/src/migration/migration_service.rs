@@ -1,9 +1,13 @@
 use crate::hashing::consistent::{ConsistentHashRing, Node};
 use crate::migration::dto::{MigrationOperation, MigrationPlan};
+use crate::migration::migration_plan::ExtendedMigrationPlan;
 use grpc_server::object_storage::c4_client::C4Client;
-use grpc_server::object_storage::{ListBucketsRequest, ListObjectsRequest, ObjectMetadata};
+use grpc_server::object_storage::{
+    GetObjectRequest, ListBucketsRequest, ListObjectsRequest, ObjectMetadata, PutObjectRequest,
+};
 use std::collections::HashMap;
 use std::error::Error;
+use tokio::sync::mpsc;
 use tonic::transport::Channel;
 
 /// Service responsible for generating migration plans based on current cluster state
@@ -134,6 +138,169 @@ impl MigrationService {
                 object_key
             );
         }
+    }
+
+    /// Executes a migration plan by moving objects between nodes using streaming
+    pub async fn execute_migration(
+        &self,
+        plan: MigrationPlan,
+    ) -> Result<ExtendedMigrationPlan, Box<dyn Error>> {
+        let mut extended_plan = ExtendedMigrationPlan::new(plan);
+        extended_plan.start();
+
+        log::info!(
+            "Starting migration execution: {} operations",
+            extended_plan.plan.operation_count()
+        );
+
+        let total_operations = extended_plan.plan.operation_count();
+        let mut completed_operations = 0;
+
+        // Execute each migration operation
+        for operation in extended_plan.plan.operations.clone() {
+            match self.execute_migration_operation(&operation).await {
+                Ok(_) => {
+                    completed_operations += 1;
+                    extended_plan.update_progress(completed_operations);
+                    log::info!(
+                        "Successfully migrated object {}/{} from {} to {} ({}/{})",
+                        operation.bucket_name,
+                        operation.object_key,
+                        operation.prev_node,
+                        operation.new_node,
+                        completed_operations,
+                        total_operations
+                    );
+                }
+                Err(e) => {
+                    log::error!(
+                        "Failed to migrate object {}/{} from {} to {}: {}",
+                        operation.bucket_name,
+                        operation.object_key,
+                        operation.prev_node,
+                        operation.new_node,
+                        e
+                    );
+                    // Continue with other operations even if one fails
+                }
+            }
+        }
+
+        if completed_operations == total_operations {
+            extended_plan.complete();
+            log::info!(
+                "Migration completed successfully: {} operations",
+                completed_operations
+            );
+        } else {
+            extended_plan.fail(format!(
+                "Migration partially completed: {}/{} operations succeeded",
+                completed_operations, total_operations
+            ));
+            log::warn!(
+                "Migration partially completed: {}/{} operations succeeded",
+                completed_operations,
+                total_operations
+            );
+        }
+
+        Ok(extended_plan)
+    }
+
+    /// Executes a single migration operation by streaming object data between nodes
+    async fn execute_migration_operation(
+        &self,
+        operation: &MigrationOperation,
+    ) -> Result<(), Box<dyn Error>> {
+        // Get clients for source and destination nodes
+        let source_client = self
+            .client_pool
+            .get(&operation.prev_node)
+            .ok_or_else(|| format!("Source node not found: {}", operation.prev_node))?;
+
+        let destination_client = self
+            .client_pool
+            .get(&operation.new_node)
+            .ok_or_else(|| format!("Destination node not found: {}", operation.new_node))?;
+
+        // Create object ID for the object to migrate
+        let object_id = grpc_server::object_storage::ObjectId {
+            bucket_name: operation.bucket_name.clone(),
+            object_key: operation.object_key.clone(),
+        };
+
+        // Step 1: Get object from source node using streaming
+        let get_request = tonic::Request::new(GetObjectRequest {
+            id: Some(object_id.clone()),
+        });
+
+        let mut get_response = source_client
+            .clone()
+            .get_object(get_request)
+            .await?
+            .into_inner();
+
+        // Step 2: Create a channel to stream data from source to destination
+        let (tx, rx) = mpsc::channel(10);
+
+        // Spawn a task to read from the source stream and write to the channel
+        let object_id_clone = object_id.clone();
+        tokio::spawn(async move {
+            let mut first_message_sent = false;
+
+            while let Some(chunk) = get_response.message().await.transpose() {
+                match chunk {
+                    Ok(response) => {
+                        if !first_message_sent {
+                            // First message: send object ID
+                            let put_request = PutObjectRequest {
+                                req: Some(
+                                    grpc_server::object_storage::put_object_request::Req::Id(
+                                        object_id_clone.clone(),
+                                    ),
+                                ),
+                            };
+                            if tx.send(put_request).await.is_err() {
+                                break;
+                            }
+                            first_message_sent = true;
+                        }
+
+                        // Send object data chunks
+                        let data = response.object_part;
+                        let put_request = PutObjectRequest {
+                            req: Some(
+                                grpc_server::object_storage::put_object_request::Req::ObjectPart(
+                                    data,
+                                ),
+                            ),
+                        };
+                        if tx.send(put_request).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Error reading from source stream: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Step 3: Put object to destination node using streaming
+        let put_request_stream = async_stream::stream! {
+            let mut rx = rx;
+            while let Some(msg) = rx.recv().await {
+                yield msg;
+            }
+        };
+
+        let put_request = tonic::Request::new(Box::pin(put_request_stream));
+
+        // Execute the put operation
+        destination_client.clone().put_object(put_request).await?;
+
+        Ok(())
     }
 
     /// Returns a reference to the client pool
