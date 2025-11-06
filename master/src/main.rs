@@ -1,3 +1,4 @@
+use crate::hashing::consistent::{ConsistentHashRing, Node};
 use clap::Parser;
 use grpc_server::object_storage::c4_client::C4Client;
 use grpc_server::object_storage::{
@@ -5,13 +6,15 @@ use grpc_server::object_storage::{
     HeadObjectRequest, ListBucketsRequest, ListObjectsRequest, MigrationExecutionResponse,
     MigrationOperation, MigrationPlanResponse, MigrationStatus, PutObjectRequest,
 };
-use master::hashing::consistent::{ConsistentHashRing, Node};
-use master::migration::migration_service::MigrationService;
 use std::collections::HashMap;
 use std::error::Error;
 use std::net::SocketAddr;
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status, Streaming};
+
+pub mod hashing;
+pub mod migration;
+pub mod model;
 
 /// Master node for distributed object storage
 #[derive(Parser, Debug)]
@@ -436,7 +439,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         log::info!("Generating migration plan (dry-run)");
 
         // Create migration service with the client pool
-        let migration_service = MigrationService::new(self.client_pool.clone());
+        let migration_service = MigrationPlanner::new(self.client_pool.clone());
 
         // Generate migration plan
         match migration_service.generate_migration_plan(&self.ring).await {
@@ -486,7 +489,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         log::info!("Starting migration execution");
 
         // Create migration service with the client pool
-        let migration_service = MigrationService::new(self.client_pool.clone());
+        let migration_service = MigrationPlanner::new(self.client_pool.clone());
 
         // First generate the migration plan
         let plan = match migration_service.generate_migration_plan(&self.ring).await {
@@ -505,19 +508,19 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             Ok(extended_plan) => {
                 // Convert internal migration status to gRPC status
                 let status = match extended_plan.status {
-                    master::migration::migration_plan::MigrationStatus::Pending => {
+                    crate::migration::migration_plan::MigrationStatus::Pending => {
                         MigrationStatus::Pending
                     }
-                    master::migration::migration_plan::MigrationStatus::InProgress => {
+                    crate::migration::migration_plan::MigrationStatus::InProgress => {
                         MigrationStatus::InProgress
                     }
-                    master::migration::migration_plan::MigrationStatus::Completed => {
+                    crate::migration::migration_plan::MigrationStatus::Completed => {
                         MigrationStatus::Completed
                     }
-                    master::migration::migration_plan::MigrationStatus::Failed(_) => {
+                    crate::migration::migration_plan::MigrationStatus::Failed(_) => {
                         MigrationStatus::Failed
                     }
-                    master::migration::migration_plan::MigrationStatus::Cancelled => {
+                    crate::migration::migration_plan::MigrationStatus::Cancelled => {
                         MigrationStatus::Cancelled
                     }
                 };
@@ -528,7 +531,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                     total_operations: extended_plan.progress.1 as u64,
                     progress_percentage: extended_plan.progress_percentage(),
                     message: match &extended_plan.status {
-                        master::migration::migration_plan::MigrationStatus::Failed(msg) => {
+                        crate::migration::migration_plan::MigrationStatus::Failed(msg) => {
                             msg.clone()
                         }
                         _ => String::new(),

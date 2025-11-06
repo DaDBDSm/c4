@@ -66,6 +66,16 @@ impl ConsistentHashRing {
     pub fn virtual_node_count(&self) -> usize {
         self.ring.len()
     }
+
+    /// Add a node to the ring with virtual nodes
+    pub fn add_node(&mut self, node: Node, virtual_nodes_per_node: usize) {
+        Self::add_node_to_ring(&mut self.ring, &node, virtual_nodes_per_node);
+    }
+
+    /// Remove a node from the ring
+    pub fn remove_node(&mut self, node_id: &str) {
+        self.ring.retain(|_, node| !node.id.starts_with(node_id));
+    }
 }
 
 #[cfg(test)]

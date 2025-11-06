@@ -123,3 +123,5 @@ enum MigrationStatus {
   FAILED = 3;
   CANCELLED = 4;
 }
+
+message add_node
