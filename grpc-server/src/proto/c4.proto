@@ -16,8 +16,9 @@ service C4 {
   rpc DeleteObject(DeleteObjectRequest) returns (google.protobuf.Empty) {}
 
   // Migration endpoints
-  rpc GetMigrationPlan(google.protobuf.Empty) returns (MigrationPlanResponse) {}
-  rpc ExecuteMigration(google.protobuf.Empty) returns (MigrationExecutionResponse) {}
+  rpc GetMigrationPlan(AddNodeRequest) returns (MigrationPlanResponse) {}
+  rpc AddNode(AddNodeRequest) returns (google.protobuf.Empty) {}
+  rpc RemoveNode(RemoveNodeRequest) returns (google.protobuf.Empty) {}
 }
 
 message CreateBucketRequest {
@@ -124,4 +125,11 @@ enum MigrationStatus {
   CANCELLED = 4;
 }
 
-message add_node
+message AddNodeRequest {
+  string node_id = 1;
+  string node_address = 2;
+}
+
+message RemoveNodeRequest {
+  string node_id = 1;
+}
