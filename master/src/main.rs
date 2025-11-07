@@ -12,6 +12,7 @@ use grpc_server::object_storage::{
 use std::collections::HashMap;
 use std::error::Error;
 use std::net::SocketAddr;
+use std::sync::{Arc, RwLock};
 use tonic::transport::{Channel, Server};
 use tonic::{Request, Response, Status, Streaming};
 
@@ -39,9 +40,9 @@ struct Args {
 
 #[derive(Clone)]
 struct MasterHandler {
-    ring: ConsistentHashRing,
-    client_pool: HashMap<String, C4Client<Channel>>,
-    active_nodes: Vec<Node>,
+    ring: Arc<RwLock<ConsistentHashRing>>,
+    client_pool: Arc<RwLock<HashMap<String, C4Client<Channel>>>>,
+    active_nodes: Arc<RwLock<Vec<Node>>>,
     virtual_nodes_per_node: usize,
 }
 
@@ -54,9 +55,10 @@ impl MasterHandler {
             return Err("No storage nodes configured".into());
         }
 
-        // Clone nodes for use in multiple places
-
-        let ring = ConsistentHashRing::new(nodes.clone(), virtual_nodes_per_node);
+        let ring = Arc::new(RwLock::new(ConsistentHashRing::new(
+            nodes.clone(),
+            virtual_nodes_per_node,
+        )));
 
         let mut client_pool = HashMap::new();
         for node in &nodes {
@@ -68,15 +70,18 @@ impl MasterHandler {
 
         Ok(Self {
             ring,
-            client_pool,
-            active_nodes: nodes,
+            client_pool: Arc::new(RwLock::new(client_pool)),
+            active_nodes: Arc::new(RwLock::new(nodes)),
             virtual_nodes_per_node,
         })
     }
 
-    async fn get_client_for_key(&self, key: &str) -> Result<&C4Client<Channel>, Status> {
-        let node = self
+    async fn get_client_for_key(&self, key: &str) -> Result<C4Client<Channel>, Status> {
+        let ring_guard = self
             .ring
+            .read()
+            .map_err(|_| Status::internal("Failed to read ring"))?;
+        let node = ring_guard
             .get_node(key)
             .ok_or_else(|| Status::internal("No storage nodes available"))?;
 
@@ -87,9 +92,112 @@ impl MasterHandler {
             node.address
         );
 
-        self.client_pool
+        let client_pool_guard = self
+            .client_pool
+            .read()
+            .map_err(|_| Status::internal("Failed to read client pool"))?;
+        client_pool_guard
             .get(&node.id)
+            .cloned()
             .ok_or_else(|| Status::internal(format!("Client not found for node: {}", node.id)))
+    }
+
+    /// Clean up unnecessary objects from previous nodes after migration
+    async fn cleanup_unnecessary_objects(
+        &self,
+        migration_plan: &crate::migration::dto::MigrationPlan,
+    ) -> Result<(), Status> {
+        log::info!("Starting cleanup of unnecessary objects after migration");
+
+        let mut cleanup_errors = Vec::new();
+
+        // Group operations by previous node to batch deletions
+        let mut operations_by_prev_node: HashMap<
+            String,
+            Vec<&crate::migration::dto::MigrationOperation>,
+        > = HashMap::new();
+
+        for operation in &migration_plan.operations {
+            operations_by_prev_node
+                .entry(operation.prev_node.clone())
+                .or_insert_with(Vec::new)
+                .push(operation);
+        }
+
+        // Clone the client pool to avoid holding the lock across await points
+        let client_pool_clone = {
+            let client_pool_guard = self
+                .client_pool
+                .read()
+                .map_err(|_| Status::internal("Failed to read client pool"))?;
+            client_pool_guard.clone()
+        };
+
+        // Delete objects from previous nodes
+        for (prev_node_id, operations) in operations_by_prev_node {
+            if let Some(client) = client_pool_clone.get(&prev_node_id) {
+                log::info!(
+                    "Cleaning up {} objects from node {}",
+                    operations.len(),
+                    prev_node_id
+                );
+
+                for operation in operations {
+                    let object_id = grpc_server::object_storage::ObjectId {
+                        bucket_name: operation.bucket_name.clone(),
+                        object_key: operation.object_key.clone(),
+                    };
+
+                    let delete_request = tonic::Request::new(DeleteObjectRequest {
+                        id: Some(object_id),
+                    });
+
+                    match client.clone().delete_object(delete_request).await {
+                        Ok(_) => {
+                            log::debug!(
+                                "Successfully deleted object {}/{} from node {}",
+                                operation.bucket_name,
+                                operation.object_key,
+                                prev_node_id
+                            );
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to delete object {}/{} from node {}: {}",
+                                operation.bucket_name,
+                                operation.object_key,
+                                prev_node_id,
+                                e
+                            );
+                            cleanup_errors.push(format!(
+                                "Failed to delete {}/{} from {}: {}",
+                                operation.bucket_name, operation.object_key, prev_node_id, e
+                            ));
+                        }
+                    }
+                }
+            } else {
+                log::warn!("Client not found for previous node: {}", prev_node_id);
+                cleanup_errors.push(format!("Client not found for node: {}", prev_node_id));
+            }
+        }
+
+        if !cleanup_errors.is_empty() {
+            log::warn!(
+                "Some cleanup operations failed: {} errors",
+                cleanup_errors.len()
+            );
+            // We don't fail the entire operation for cleanup errors, just log them
+            // This allows the system to continue functioning even if some cleanup fails
+        }
+
+        log::info!(
+            "Cleanup completed with {} errors out of {} operations",
+            cleanup_errors.len(),
+            migration_plan.operations.len()
+        );
+
+        Ok(())
     }
 }
 
@@ -104,7 +212,16 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
 
         let mut errors = Vec::new();
 
-        for client in self.client_pool.values() {
+        // Clone the client pool to avoid holding the lock across await points
+        let client_pool_clone = {
+            let client_pool_guard = self
+                .client_pool
+                .read()
+                .map_err(|_| Status::internal("Failed to read client pool"))?;
+            client_pool_guard.clone()
+        };
+
+        for client in client_pool_clone.values() {
             let req = Request::new(CreateBucketRequest {
                 bucket_name: bucket_name.clone(),
             });
@@ -140,7 +257,16 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let mut all_buckets = std::collections::HashSet::new();
         let mut errors = Vec::new();
 
-        for client in self.client_pool.values() {
+        // Clone the client pool to avoid holding the lock across await points
+        let client_pool_clone = {
+            let client_pool_guard = self
+                .client_pool
+                .read()
+                .map_err(|_| Status::internal("Failed to read client pool"))?;
+            client_pool_guard.clone()
+        };
+
+        for client in client_pool_clone.values() {
             let req = Request::new(ListBucketsRequest { limit, offset });
             match client.clone().list_buckets(req).await {
                 Ok(response) => {
@@ -192,7 +318,16 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
 
         let mut errors = Vec::new();
 
-        for client in self.client_pool.values() {
+        // Clone the client pool to avoid holding the lock across await points
+        let client_pool_clone = {
+            let client_pool_guard = self
+                .client_pool
+                .read()
+                .map_err(|_| Status::internal("Failed to read client pool"))?;
+            client_pool_guard.clone()
+        };
+
+        for client in client_pool_clone.values() {
             let req = Request::new(DeleteBucketRequest {
                 bucket_name: bucket_name.clone(),
             });
@@ -326,7 +461,16 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let mut all_objects = Vec::new();
         let mut errors = Vec::new();
 
-        for client in self.client_pool.values() {
+        // Clone the client pool to avoid holding the lock across await points
+        let client_pool_clone = {
+            let client_pool_guard = self
+                .client_pool
+                .read()
+                .map_err(|_| Status::internal("Failed to read client pool"))?;
+            client_pool_guard.clone()
+        };
+
+        for client in client_pool_clone.values() {
             let req = Request::new(ListObjectsRequest {
                 bucket_name: bucket_name.clone(),
                 limit,
@@ -464,7 +608,13 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         );
 
         // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
-        let current_nodes: Vec<Node> = self.active_nodes.clone();
+        let current_nodes = {
+            let active_nodes_guard = self
+                .active_nodes
+                .read()
+                .map_err(|_| Status::internal("Failed to read active nodes"))?;
+            active_nodes_guard.clone()
+        };
 
         // Create new node list with the added node
         let mut new_nodes = current_nodes.clone();
@@ -473,7 +623,14 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         }
 
         // Generate migration plan
-        let planner = MigrationPlanner::new(self.client_pool.clone(), self.virtual_nodes_per_node); // Using default virtual nodes
+        let client_pool_clone = {
+            let client_pool_guard = self
+                .client_pool
+                .read()
+                .map_err(|_| Status::internal("Failed to read client pool"))?;
+            client_pool_guard.clone()
+        };
+        let planner = MigrationPlanner::new(client_pool_clone, self.virtual_nodes_per_node);
         let migration_plan = planner
             .generate_migration_plan(current_nodes, new_nodes)
             .await
@@ -519,10 +676,40 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             address: req.node_address.clone(),
         };
 
+        // Add new node to client pool
+        let address = format!("http://{}", node_to_add.address);
+        match C4Client::connect(address.clone()).await {
+            Ok(client) => {
+                let mut client_pool_guard = self
+                    .client_pool
+                    .write()
+                    .map_err(|_| Status::internal("Failed to write client pool"))?;
+                client_pool_guard.insert(node_to_add.id.clone(), client);
+                log::info!("Connected to new storage node: {}", node_to_add.address);
+            }
+            Err(e) => {
+                log::error!(
+                    "Failed to connect to new node {}: {}",
+                    node_to_add.address,
+                    e
+                );
+                return Err(Status::internal(format!(
+                    "Failed to connect to new node: {}",
+                    e
+                )));
+            }
+        }
+
         log::info!("Adding node: {} at {}", node_to_add.id, node_to_add.address);
 
         // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
-        let current_nodes: Vec<Node> = self.active_nodes.clone();
+        let current_nodes = {
+            let active_nodes_guard = self
+                .active_nodes
+                .read()
+                .map_err(|_| Status::internal("Failed to read active nodes"))?;
+            active_nodes_guard.clone()
+        };
 
         // Create new node list with the added node
         let mut new_nodes = current_nodes.clone();
@@ -531,9 +718,16 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         }
 
         // Generate migration plan
-        let planner = MigrationPlanner::new(self.client_pool.clone(), self.virtual_nodes_per_node);
+        let client_pool_clone = {
+            let client_pool_guard = self
+                .client_pool
+                .read()
+                .map_err(|_| Status::internal("Failed to read client pool"))?;
+            client_pool_guard.clone()
+        };
+        let planner = MigrationPlanner::new(client_pool_clone.clone(), self.virtual_nodes_per_node);
         let migration_plan = planner
-            .generate_migration_plan(current_nodes, new_nodes)
+            .generate_migration_plan(current_nodes.clone(), new_nodes.clone())
             .await
             .map_err(|e| {
                 log::error!("Failed to generate migration plan for node addition: {}", e);
@@ -541,14 +735,35 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             })?;
 
         // Execute migration
-        let migration_service = MigrationService::new(self.client_pool.clone());
+        let migration_service = MigrationService::new(client_pool_clone);
         migration_service
-            .migrate_data(migration_plan)
+            .migrate_data(migration_plan.clone())
             .await
             .map_err(|e| {
                 log::error!("Failed to execute migration: {}", e);
                 Status::internal(format!("Failed to execute migration: {}", e))
             })?;
+
+        // Update master ring with new nodes
+        {
+            let mut ring_guard = self
+                .ring
+                .write()
+                .map_err(|_| Status::internal("Failed to write ring"))?;
+            *ring_guard = ConsistentHashRing::new(new_nodes.clone(), self.virtual_nodes_per_node);
+        }
+
+        // Update active nodes
+        {
+            let mut active_nodes_guard = self
+                .active_nodes
+                .write()
+                .map_err(|_| Status::internal("Failed to write active nodes"))?;
+            *active_nodes_guard = new_nodes;
+        }
+
+        // Clean up unnecessary objects from previous nodes
+        self.cleanup_unnecessary_objects(&migration_plan).await?;
 
         log::info!("Successfully added node: {}", node_to_add.id);
 
@@ -571,7 +786,13 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         );
 
         // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
-        let current_nodes: Vec<Node> = self.active_nodes.clone();
+        let current_nodes = {
+            let active_nodes_guard = self
+                .active_nodes
+                .read()
+                .map_err(|_| Status::internal("Failed to read active nodes"))?;
+            active_nodes_guard.clone()
+        };
 
         // Create new node list without the removed node
         let new_nodes: Vec<Node> = current_nodes
@@ -587,7 +808,14 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         );
 
         // Generate migration plan
-        let planner = MigrationPlanner::new(self.client_pool.clone(), self.virtual_nodes_per_node); // Using default virtual nodes
+        let client_pool_clone = {
+            let client_pool_guard = self
+                .client_pool
+                .read()
+                .map_err(|_| Status::internal("Failed to read client pool"))?;
+            client_pool_guard.clone()
+        };
+        let planner = MigrationPlanner::new(client_pool_clone, self.virtual_nodes_per_node);
         let migration_plan = planner
             .generate_migration_plan(current_nodes, new_nodes)
             .await
@@ -637,7 +865,13 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         log::info!("Removing node: {}", node_to_remove.id);
 
         // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
-        let current_nodes: Vec<Node> = self.active_nodes.clone();
+        let current_nodes = {
+            let active_nodes_guard = self
+                .active_nodes
+                .read()
+                .map_err(|_| Status::internal("Failed to read active nodes"))?;
+            active_nodes_guard.clone()
+        };
 
         // Create new node list without the removed node
         let new_nodes: Vec<Node> = current_nodes
@@ -647,9 +881,16 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             .collect();
 
         // Generate migration plan
-        let planner = MigrationPlanner::new(self.client_pool.clone(), self.virtual_nodes_per_node);
+        let client_pool_clone = {
+            let client_pool_guard = self
+                .client_pool
+                .read()
+                .map_err(|_| Status::internal("Failed to read client pool"))?;
+            client_pool_guard.clone()
+        };
+        let planner = MigrationPlanner::new(client_pool_clone.clone(), self.virtual_nodes_per_node);
         let migration_plan = planner
-            .generate_migration_plan(current_nodes, new_nodes)
+            .generate_migration_plan(current_nodes.clone(), new_nodes.clone())
             .await
             .map_err(|e| {
                 log::error!("Failed to generate migration plan for node removal: {}", e);
@@ -657,14 +898,44 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             })?;
 
         // Execute migration
-        let migration_service = MigrationService::new(self.client_pool.clone());
+        let migration_service = MigrationService::new(client_pool_clone);
         migration_service
-            .migrate_data(migration_plan)
+            .migrate_data(migration_plan.clone())
             .await
             .map_err(|e| {
                 log::error!("Failed to execute migration: {}", e);
                 Status::internal(format!("Failed to execute migration: {}", e))
             })?;
+
+        // Update master ring with new nodes
+        {
+            let mut ring_guard = self
+                .ring
+                .write()
+                .map_err(|_| Status::internal("Failed to write ring"))?;
+            *ring_guard = ConsistentHashRing::new(new_nodes.clone(), self.virtual_nodes_per_node);
+        }
+
+        // Update active nodes
+        {
+            let mut active_nodes_guard = self
+                .active_nodes
+                .write()
+                .map_err(|_| Status::internal("Failed to write active nodes"))?;
+            *active_nodes_guard = new_nodes;
+        }
+
+        // Remove node from client pool
+        {
+            let mut client_pool_guard = self
+                .client_pool
+                .write()
+                .map_err(|_| Status::internal("Failed to write client pool"))?;
+            client_pool_guard.remove(&node_to_remove.id);
+        }
+
+        // Clean up unnecessary objects from previous nodes
+        self.cleanup_unnecessary_objects(&migration_plan).await?;
 
         log::info!("Successfully removed node: {}", node_to_remove.id);
 

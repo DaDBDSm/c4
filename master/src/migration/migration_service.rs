@@ -1,7 +1,7 @@
 use std::{collections::HashMap, error::Error};
 
 use grpc_server::object_storage::{
-    GetObjectRequest, ObjectId, PutObjectRequest, c4_client::C4Client,
+    CreateBucketRequest, GetObjectRequest, ObjectId, PutObjectRequest, c4_client::C4Client,
 };
 use tonic::transport::Channel;
 
@@ -34,6 +34,10 @@ impl MigrationService {
                 object_key: operation.object_key.clone(),
             };
 
+            // Ensure bucket exists on destination before migrating objects
+            self.ensure_bucket_exists(&destination_client, &operation.bucket_name)
+                .await?;
+
             // stream data from source to destination
             let get_request = tonic::Request::new(GetObjectRequest {
                 id: Some(object_id.clone()),
@@ -60,6 +64,49 @@ impl MigrationService {
 
             // Send the stream to the destination client
             let _put_response = destination_client.clone().put_object(put_request).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Ensure bucket exists on destination node, create it if it doesn't
+    async fn ensure_bucket_exists(
+        &self,
+        destination_client: &C4Client<Channel>,
+        bucket_name: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        // Try to create the bucket - if it already exists, this will fail gracefully
+        // but we don't want to fail the entire migration for existing buckets
+        let create_bucket_request = tonic::Request::new(CreateBucketRequest {
+            bucket_name: bucket_name.to_string(),
+        });
+
+        match destination_client
+            .clone()
+            .create_bucket(create_bucket_request)
+            .await
+        {
+            Ok(_) => {
+                log::info!("Created bucket '{}' on destination node", bucket_name);
+            }
+            Err(e) => {
+                // If bucket already exists, that's fine - just log it
+                // If it's another error, we should log it but continue
+                if e.message().contains("already exists") || e.message().contains("exists") {
+                    log::debug!(
+                        "Bucket '{}' already exists on destination node",
+                        bucket_name
+                    );
+                } else {
+                    log::warn!(
+                        "Failed to create bucket '{}' on destination node: {}",
+                        bucket_name,
+                        e
+                    );
+                    // We don't fail here because the bucket might already exist
+                    // and we want to continue with the migration
+                }
+            }
         }
 
         Ok(())
