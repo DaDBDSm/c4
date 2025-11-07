@@ -1,10 +1,12 @@
 use crate::hashing::consistent::{ConsistentHashRing, Node};
+use crate::migration::migration_planner::MigrationPlanner;
+use crate::migration::migration_service::MigrationService;
 use clap::Parser;
 use grpc_server::object_storage::c4_client::C4Client;
 use grpc_server::object_storage::{
     CreateBucketRequest, DeleteBucketRequest, DeleteObjectRequest, GetObjectRequest,
-    HeadObjectRequest, ListBucketsRequest, ListObjectsRequest, MigrationExecutionResponse,
-    MigrationOperation, MigrationPlanResponse, MigrationStatus, PutObjectRequest,
+    HeadObjectRequest, ListBucketsRequest, ListObjectsRequest,
+    MigrationOperation as ProtoMigrationOperation, MigrationPlanResponse, PutObjectRequest,
 };
 use std::collections::HashMap;
 use std::error::Error;
@@ -26,7 +28,7 @@ struct Args {
     #[arg(
         short,
         long,
-        default_value = "localhost:4001,localhost:4002,localhost:4003"
+        default_value = "node1-localhost:4001,node2-localhost:4002,node3-localhost:4003"
     )]
     nodes: String,
 
@@ -38,6 +40,7 @@ struct Args {
 struct MasterHandler {
     ring: ConsistentHashRing,
     client_pool: HashMap<String, C4Client<Channel>>,
+    active_nodes: Vec<Node>,
 }
 
 impl MasterHandler {
@@ -49,17 +52,23 @@ impl MasterHandler {
             return Err("No storage nodes configured".into());
         }
 
+        // Clone nodes for use in multiple places
+
         let ring = ConsistentHashRing::new(nodes.clone(), virtual_nodes_per_node);
 
         let mut client_pool = HashMap::new();
-        for node in nodes {
+        for node in &nodes {
             let address = format!("http://{}", node.address);
             let client = C4Client::connect(address.clone()).await?;
             client_pool.insert(node.id.clone(), client);
             log::info!("Connected to storage node: {}", node.address);
         }
 
-        Ok(Self { ring, client_pool })
+        Ok(Self {
+            ring,
+            client_pool,
+            active_nodes: nodes,
+        })
     }
 
     fn get_key_for_object(bucket_name: &str, object_key: &str) -> String {
@@ -431,12 +440,236 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
     }
 
     type GetObjectStream = tonic::codec::Streaming<grpc_server::object_storage::GetObjectResponse>;
+
+    async fn get_migration_plan(
+        &self,
+        request: Request<grpc_server::object_storage::AddNodeRequest>,
+    ) -> Result<Response<MigrationPlanResponse>, Status> {
+        let req = request.into_inner();
+        let node_to_add = Node {
+            id: req.node_id.clone(),
+            address: req.node_address.clone(),
+        };
+
+        log::info!(
+            "Generating migration plan for adding node: {} at {}",
+            node_to_add.id,
+            node_to_add.address
+        );
+
+        // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
+        let current_nodes: Vec<Node> = self.active_nodes.clone();
+
+        // Create new node list with the added node
+        let mut new_nodes = current_nodes.clone();
+        if !new_nodes.iter().any(|n| n.id == node_to_add.id) {
+            new_nodes.push(node_to_add.clone());
+        }
+
+        // Generate migration plan
+        let planner = MigrationPlanner::new(self.client_pool.clone(), 100); // Using default virtual nodes
+        let migration_plan = planner
+            .generate_migration_plan(current_nodes, new_nodes)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to generate migration plan: {}", e);
+                Status::internal(format!("Failed to generate migration plan: {}", e))
+            })?;
+
+        // Convert to protobuf response
+        let proto_operations: Vec<ProtoMigrationOperation> = migration_plan
+            .operations
+            .into_iter()
+            .map(|op| ProtoMigrationOperation {
+                prev_node: op.prev_node,
+                new_node: op.new_node,
+                object_key: op.object_key,
+                bucket_name: op.bucket_name,
+            })
+            .collect();
+
+        let operation_count = proto_operations.len() as u64;
+
+        log::info!(
+            "Generated migration plan with {} operations",
+            operation_count
+        );
+
+        Ok(Response::new(MigrationPlanResponse {
+            operations: proto_operations,
+            total_objects: operation_count, // For simplicity, assuming each operation is one object
+            unchanged_objects: 0,           // This would require more complex tracking
+            operation_count,
+        }))
+    }
+
+    async fn add_node(
+        &self,
+        request: Request<grpc_server::object_storage::AddNodeRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        let node_to_add = Node {
+            id: req.node_id.clone(),
+            address: req.node_address.clone(),
+        };
+
+        log::info!("Adding node: {} at {}", node_to_add.id, node_to_add.address);
+
+        // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
+        let current_nodes: Vec<Node> = self.active_nodes.clone();
+
+        // Create new node list with the added node
+        let mut new_nodes = current_nodes.clone();
+        if !new_nodes.iter().any(|n| n.id == node_to_add.id) {
+            new_nodes.push(node_to_add.clone());
+        }
+
+        // Generate migration plan
+        let planner = MigrationPlanner::new(self.client_pool.clone(), 100);
+        let migration_plan = planner
+            .generate_migration_plan(current_nodes, new_nodes)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to generate migration plan for node addition: {}", e);
+                Status::internal(format!("Failed to generate migration plan: {}", e))
+            })?;
+
+        // Execute migration
+        let migration_service = MigrationService::new(self.client_pool.clone());
+        migration_service
+            .migrate_data(migration_plan)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to execute migration: {}", e);
+                Status::internal(format!("Failed to execute migration: {}", e))
+            })?;
+
+        log::info!("Successfully added node: {}", node_to_add.id);
+
+        Ok(Response::new(()))
+    }
+
+    async fn get_migration_plan_by_removing_node(
+        &self,
+        request: Request<grpc_server::object_storage::RemoveNodeRequest>,
+    ) -> Result<Response<MigrationPlanResponse>, Status> {
+        let req = request.into_inner();
+        let node_to_remove = Node {
+            id: req.node_id.clone(),
+            address: "".to_string(), // Address not needed for removal planning
+        };
+
+        log::info!(
+            "Generating migration plan for removing node: {}",
+            node_to_remove.id
+        );
+
+        // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
+        let current_nodes: Vec<Node> = self.active_nodes.clone();
+
+        // Create new node list without the removed node
+        let new_nodes: Vec<Node> = current_nodes
+            .iter()
+            .filter(|n| n.id != node_to_remove.id)
+            .cloned()
+            .collect();
+
+        log::info!(
+            "Current nodes: {:?}, new_nodes: {:?}",
+            current_nodes,
+            new_nodes
+        );
+
+        // Generate migration plan
+        let planner = MigrationPlanner::new(self.client_pool.clone(), 100); // Using default virtual nodes
+        let migration_plan = planner
+            .generate_migration_plan(current_nodes, new_nodes)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to generate migration plan for node removal: {}", e);
+                Status::internal(format!("Failed to generate migration plan: {}", e))
+            })?;
+
+        // Convert to protobuf response
+        let proto_operations: Vec<ProtoMigrationOperation> = migration_plan
+            .operations
+            .into_iter()
+            .map(|op| ProtoMigrationOperation {
+                prev_node: op.prev_node,
+                new_node: op.new_node,
+                object_key: op.object_key,
+                bucket_name: op.bucket_name,
+            })
+            .collect();
+
+        let operation_count = proto_operations.len() as u64;
+
+        log::info!(
+            "Generated migration plan with {} operations for removing node {}",
+            operation_count,
+            node_to_remove.id
+        );
+
+        Ok(Response::new(MigrationPlanResponse {
+            operations: proto_operations,
+            total_objects: operation_count, // For simplicity, assuming each operation is one object
+            unchanged_objects: 0,           // This would require more complex tracking
+            operation_count,
+        }))
+    }
+
+    async fn remove_node(
+        &self,
+        request: Request<grpc_server::object_storage::RemoveNodeRequest>,
+    ) -> Result<Response<()>, Status> {
+        let req = request.into_inner();
+        let node_to_remove = Node {
+            id: req.node_id.clone(),
+            address: "".to_string(), // Address not needed for removal
+        };
+
+        log::info!("Removing node: {}", node_to_remove.id);
+
+        // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
+        let current_nodes: Vec<Node> = self.active_nodes.clone();
+
+        // Create new node list without the removed node
+        let new_nodes: Vec<Node> = current_nodes
+            .iter()
+            .filter(|n| n.id != node_to_remove.id)
+            .cloned()
+            .collect();
+
+        // Generate migration plan
+        let planner = MigrationPlanner::new(self.client_pool.clone(), 100);
+        let migration_plan = planner
+            .generate_migration_plan(current_nodes, new_nodes)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to generate migration plan for node removal: {}", e);
+                Status::internal(format!("Failed to generate migration plan: {}", e))
+            })?;
+
+        // Execute migration
+        let migration_service = MigrationService::new(self.client_pool.clone());
+        migration_service
+            .migrate_data(migration_plan)
+            .await
+            .map_err(|e| {
+                log::error!("Failed to execute migration: {}", e);
+                Status::internal(format!("Failed to execute migration: {}", e))
+            })?;
+
+        log::info!("Successfully removed node: {}", node_to_remove.id);
+
+        Ok(Response::new(()))
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Debug)
         .init();
 
     let args = Args::parse();
@@ -448,12 +681,21 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let nodes: Vec<Node> = args
         .nodes
         .split(',')
-        .enumerate()
-        .map(|(i, addr)| Node {
-            id: format!("node{}", i + 1),
-            address: addr.trim().to_string(),
+        .map(|node_str| {
+            let parts: Vec<&str> = node_str.split('-').collect();
+            if parts.len() != 2 {
+                return Err(format!(
+                    "Invalid node format: '{}'. Expected format: <node_id>-<node_address>",
+                    node_str
+                )
+                .into());
+            }
+            Ok(Node {
+                id: parts[0].trim().to_string(),
+                address: parts[1].trim().to_string(),
+            })
         })
-        .collect();
+        .collect::<Result<Vec<Node>, Box<dyn Error>>>()?;
 
     let handler = MasterHandler::new(nodes, args.virtual_nodes).await?;
 

@@ -453,22 +453,31 @@ impl C4 for C4Handler {
         }
     }
 
+    async fn remove_node(
+        &self,
+        request: Request<grpc_server::object_storage::RemoveNodeRequest>,
+    ) -> Result<Response<()>, Status> {
+        todo!()
+    }
+
+    async fn add_node(
+        &self,
+        request: Request<grpc_server::object_storage::AddNodeRequest>,
+    ) -> Result<Response<()>, Status> {
+        todo!()
+    }
+
     async fn get_migration_plan(
         &self,
-        _request: Request<()>,
+        request: Request<grpc_server::object_storage::AddNodeRequest>,
     ) -> Result<Response<MigrationPlanResponse>, Status> {
-        log::info!("Getting migration plan");
+        todo!()
+    }
 
-        // For now, return an empty migration plan
-        // In a real implementation, this would generate a migration plan based on current state
-        let response = MigrationPlanResponse {
-            operations: Vec::new(),
-            total_objects: 0,
-            unchanged_objects: 0,
-            operation_count: 0,
-        };
-
-        log::info!("Returning empty migration plan");
-        Ok(Response::new(response))
+    async fn get_migration_plan_by_removing_node(
+        &self,
+        request: Request<grpc_server::object_storage::RemoveNodeRequest>,
+    ) -> Result<Response<MigrationPlanResponse>, Status> {
+        todo!()
     }
 }

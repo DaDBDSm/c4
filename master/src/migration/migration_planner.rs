@@ -44,13 +44,35 @@ impl MigrationPlanner {
                 let (previous_node, new_node) =
                     self.check_object_location(&object, &previous_ring, &new_ring)?;
 
+                log::debug!(
+                    "Checking object {}/{} - previous node: {}, new node: {}",
+                    object.bucket_name,
+                    object.object_key,
+                    previous_node.id,
+                    new_node.id
+                );
+
                 if previous_node.id != new_node.id {
+                    log::info!(
+                        "Object {}/{} needs migration: {} -> {}",
+                        object.bucket_name,
+                        object.object_key,
+                        previous_node.id,
+                        new_node.id
+                    );
                     plan.add_operation(MigrationOperation {
                         prev_node: previous_node.id.clone(),
                         new_node: new_node.id.clone(),
                         object_key: object.object_key.clone(),
                         bucket_name: object.bucket_name.clone(),
                     });
+                } else {
+                    log::debug!(
+                        "Object {}/{} remains on same node: {}",
+                        object.bucket_name,
+                        object.object_key,
+                        previous_node.id
+                    );
                 }
             }
         }

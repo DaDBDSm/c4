@@ -17,6 +17,7 @@ service C4 {
 
   // Migration endpoints
   rpc GetMigrationPlan(AddNodeRequest) returns (MigrationPlanResponse) {}
+  rpc GetMigrationPlanByRemovingNode(RemoveNodeRequest) returns (MigrationPlanResponse) {}
   rpc AddNode(AddNodeRequest) returns (google.protobuf.Empty) {}
   rpc RemoveNode(RemoveNodeRequest) returns (google.protobuf.Empty) {}
 }
