@@ -1,4 +1,5 @@
 use crate::hashing::consistent::{ConsistentHashRing, Node};
+use crate::hashing::get_key_for_object;
 use crate::migration::dto::{MigrationOperation, MigrationPlan};
 use crate::model::ObjectIdentifier;
 use grpc_server::object_storage::c4_client::C4Client;
@@ -33,6 +34,17 @@ impl MigrationPlanner {
         let previous_ring =
             ConsistentHashRing::new(previous_nodes.clone(), self.virtual_nodes_per_node);
         let new_ring = ConsistentHashRing::new(new_nodes.clone(), self.virtual_nodes_per_node);
+
+        log::debug!("Previous ring nodes: {:?}", previous_nodes);
+        log::debug!("New ring nodes: {:?}", new_nodes);
+        log::debug!(
+            "Previous ring virtual nodes per node: {}",
+            self.virtual_nodes_per_node
+        );
+        log::debug!(
+            "New ring virtual nodes per node: {}",
+            self.virtual_nodes_per_node
+        );
 
         for node in &previous_nodes {
             let Ok(objects) = self.query_node_objects(&node.id).await else {
@@ -127,8 +139,21 @@ impl MigrationPlanner {
         previous_ring: &ConsistentHashRing,
         new_ring: &ConsistentHashRing,
     ) -> Result<(Node, Node), Box<dyn Error>> {
-        let previous_node = previous_ring.get_node(&object.object_key).unwrap();
-        let new_node = new_ring.get_node(&object.object_key).unwrap();
+        let key = &get_key_for_object(&object.bucket_name, &object.object_key);
+
+        let previous_node = previous_ring.get_node(key).unwrap();
+        let new_node = new_ring.get_node(key).unwrap();
+
+        log::debug!(
+            "Object {}/{} - previous ring selected node: {} (address: {}), new ring selected node: {} (address: {})",
+            object.bucket_name,
+            object.object_key,
+            previous_node.id,
+            previous_node.address,
+            new_node.id,
+            new_node.address
+        );
+
         Ok((previous_node.clone(), new_node.clone()))
     }
 }

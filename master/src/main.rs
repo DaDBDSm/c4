@@ -1,4 +1,5 @@
 use crate::hashing::consistent::{ConsistentHashRing, Node};
+use crate::hashing::get_key_for_object;
 use crate::migration::migration_planner::MigrationPlanner;
 use crate::migration::migration_service::MigrationService;
 use clap::Parser;
@@ -41,6 +42,7 @@ struct MasterHandler {
     ring: ConsistentHashRing,
     client_pool: HashMap<String, C4Client<Channel>>,
     active_nodes: Vec<Node>,
+    virtual_nodes_per_node: usize,
 }
 
 impl MasterHandler {
@@ -68,11 +70,8 @@ impl MasterHandler {
             ring,
             client_pool,
             active_nodes: nodes,
+            virtual_nodes_per_node,
         })
-    }
-
-    fn get_key_for_object(bucket_name: &str, object_key: &str) -> String {
-        format!("{}_{}", bucket_name, object_key)
     }
 
     async fn get_client_for_key(&self, key: &str) -> Result<&C4Client<Channel>, Status> {
@@ -80,6 +79,13 @@ impl MasterHandler {
             .ring
             .get_node(key)
             .ok_or_else(|| Status::internal("No storage nodes available"))?;
+
+        log::debug!(
+            "Key '{}' mapped to node: {} (address: {})",
+            key,
+            node.id,
+            node.address
+        );
 
         self.client_pool
             .get(&node.id)
@@ -242,7 +248,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let object_key = object_id.object_key.clone();
         log::info!("Putting object: {}/{}", bucket_name, object_key);
 
-        let key = Self::get_key_for_object(&bucket_name, &object_key);
+        let key = get_key_for_object(&bucket_name, &object_key);
         let client = self.get_client_for_key(&key).await?;
 
         let request_stream = async_stream::stream! {
@@ -282,7 +288,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let object_key = object_id.object_key.clone();
         log::info!("Getting object: {}/{}", bucket_name, object_key);
 
-        let key = Self::get_key_for_object(&bucket_name, &object_key);
+        let key = get_key_for_object(&bucket_name, &object_key);
         let client = self.get_client_for_key(&key).await?;
 
         let request = Request::new(GetObjectRequest {
@@ -369,7 +375,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let object_key = object_id.object_key.clone();
         log::info!("Head object: {}/{}", bucket_name, object_key);
 
-        let key = Self::get_key_for_object(&bucket_name, &object_key);
+        let key = get_key_for_object(&bucket_name, &object_key);
         let client = self.get_client_for_key(&key).await?;
 
         let request = Request::new(HeadObjectRequest {
@@ -411,7 +417,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let object_key = object_id.object_key.clone();
         log::info!("Deleting object: {}/{}", bucket_name, object_key);
 
-        let key = Self::get_key_for_object(&bucket_name, &object_key);
+        let key = get_key_for_object(&bucket_name, &object_key);
         let client = self.get_client_for_key(&key).await?;
 
         let request = Request::new(DeleteObjectRequest {
@@ -467,7 +473,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         }
 
         // Generate migration plan
-        let planner = MigrationPlanner::new(self.client_pool.clone(), 100); // Using default virtual nodes
+        let planner = MigrationPlanner::new(self.client_pool.clone(), self.virtual_nodes_per_node); // Using default virtual nodes
         let migration_plan = planner
             .generate_migration_plan(current_nodes, new_nodes)
             .await
@@ -525,7 +531,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         }
 
         // Generate migration plan
-        let planner = MigrationPlanner::new(self.client_pool.clone(), 100);
+        let planner = MigrationPlanner::new(self.client_pool.clone(), self.virtual_nodes_per_node);
         let migration_plan = planner
             .generate_migration_plan(current_nodes, new_nodes)
             .await
@@ -581,7 +587,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         );
 
         // Generate migration plan
-        let planner = MigrationPlanner::new(self.client_pool.clone(), 100); // Using default virtual nodes
+        let planner = MigrationPlanner::new(self.client_pool.clone(), self.virtual_nodes_per_node); // Using default virtual nodes
         let migration_plan = planner
             .generate_migration_plan(current_nodes, new_nodes)
             .await
@@ -641,7 +647,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             .collect();
 
         // Generate migration plan
-        let planner = MigrationPlanner::new(self.client_pool.clone(), 100);
+        let planner = MigrationPlanner::new(self.client_pool.clone(), self.virtual_nodes_per_node);
         let migration_plan = planner
             .generate_migration_plan(current_nodes, new_nodes)
             .await
