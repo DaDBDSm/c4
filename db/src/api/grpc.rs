@@ -164,6 +164,7 @@ impl C4 for C4Handler {
             bucket_name: object_id.bucket_name.clone(),
             key: object_id.object_key.clone(),
             stream: Box::new(byte_stream),
+            version: object_id.version,
         };
 
         let metadata = match self.c4_storage.put_object(dto).await {
@@ -208,9 +209,11 @@ impl C4 for C4Handler {
                 id: Some(ObjectId {
                     bucket_name: metadata.bucket_name,
                     object_key: metadata.key,
+                    version: metadata.version,
                 }),
                 size: metadata.size,
                 created_at: metadata.created_at,
+                version: metadata.version,
             }),
         };
 
@@ -339,9 +342,11 @@ impl C4 for C4Handler {
                             id: Some(ObjectId {
                                 bucket_name: object_metadata.bucket_name.clone(),
                                 object_key: object_metadata.key.clone(),
+                                version: object_metadata.version,
                             }),
                             size: object_metadata.size,
                             created_at: object_metadata.created_at,
+                            version: object_metadata.version,
                         })
                         .collect(),
                 }))
@@ -399,9 +404,11 @@ impl C4 for C4Handler {
                         id: Some(ObjectId {
                             bucket_name: metadata.bucket_name.clone(),
                             object_key: metadata.key.clone(),
+                            version: metadata.version,
                         }),
                         size: metadata.size,
                         created_at: metadata.created_at,
+                        version: metadata.version,
                     }),
                 }))
             }
@@ -455,29 +462,37 @@ impl C4 for C4Handler {
 
     async fn remove_node(
         &self,
-        request: Request<grpc_server::object_storage::RemoveNodeRequest>,
+        _request: Request<grpc_server::object_storage::RemoveNodeRequest>,
     ) -> Result<Response<()>, Status> {
-        todo!()
+        Err(Status::unimplemented(
+            "RemoveNode is not supported on storage nodes (handled by master)",
+        ))
     }
 
     async fn add_node(
         &self,
-        request: Request<grpc_server::object_storage::AddNodeRequest>,
+        _request: Request<grpc_server::object_storage::AddNodeRequest>,
     ) -> Result<Response<()>, Status> {
-        todo!()
+        Err(Status::unimplemented(
+            "AddNode is not supported on storage nodes (handled by master)",
+        ))
     }
 
     async fn get_migration_plan(
         &self,
-        request: Request<grpc_server::object_storage::AddNodeRequest>,
+        _request: Request<grpc_server::object_storage::AddNodeRequest>,
     ) -> Result<Response<MigrationPlanResponse>, Status> {
-        todo!()
+        Err(Status::unimplemented(
+            "GetMigrationPlan is not supported on storage nodes (handled by master)",
+        ))
     }
 
     async fn get_migration_plan_by_removing_node(
         &self,
-        request: Request<grpc_server::object_storage::RemoveNodeRequest>,
+        _request: Request<grpc_server::object_storage::RemoveNodeRequest>,
     ) -> Result<Response<MigrationPlanResponse>, Status> {
-        todo!()
+        Err(Status::unimplemented(
+            "GetMigrationPlanByRemovingNode is not supported on storage nodes (handled by master)",
+        ))
     }
 }

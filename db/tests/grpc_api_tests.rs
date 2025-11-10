@@ -150,6 +150,7 @@ async fn test_put_and_get_object_grpc() {
         PutObjectRequest {
             req: Some(grpc_server::object_storage::put_object_request::Req::Id(
                 ObjectId {
+                version: 0,
                     bucket_name: bucket_name.to_string(),
                     object_key: object_key.to_string(),
                 },
@@ -177,6 +178,7 @@ async fn test_put_and_get_object_grpc() {
     let response = client
         .get_object(Request::new(GetObjectRequest {
             id: Some(ObjectId {
+                version: 0,
                 bucket_name: bucket_name.to_string(),
                 object_key: object_key.to_string(),
             }),
@@ -223,6 +225,7 @@ async fn test_list_objects_grpc() {
             PutObjectRequest {
                 req: Some(grpc_server::object_storage::put_object_request::Req::Id(
                     ObjectId {
+                version: 0,
                         bucket_name: bucket_name.to_string(),
                         object_key: object_name.to_string(),
                     },
@@ -319,6 +322,7 @@ async fn test_head_object_grpc() {
         PutObjectRequest {
             req: Some(grpc_server::object_storage::put_object_request::Req::Id(
                 ObjectId {
+                version: 0,
                     bucket_name: bucket_name.to_string(),
                     object_key: object_key.to_string(),
                 },
@@ -341,6 +345,7 @@ async fn test_head_object_grpc() {
     let response = client
         .head_object(Request::new(HeadObjectRequest {
             id: Some(ObjectId {
+                version: 0,
                 bucket_name: bucket_name.to_string(),
                 object_key: object_key.to_string(),
             }),
@@ -383,6 +388,7 @@ async fn test_delete_object_grpc() {
         PutObjectRequest {
             req: Some(grpc_server::object_storage::put_object_request::Req::Id(
                 ObjectId {
+                version: 0,
                     bucket_name: bucket_name.to_string(),
                     object_key: object_key.to_string(),
                 },
@@ -405,6 +411,7 @@ async fn test_delete_object_grpc() {
     let response = client
         .head_object(Request::new(HeadObjectRequest {
             id: Some(ObjectId {
+                version: 0,
                 bucket_name: bucket_name.to_string(),
                 object_key: object_key.to_string(),
             }),
@@ -415,6 +422,7 @@ async fn test_delete_object_grpc() {
     let response = client
         .delete_object(Request::new(DeleteObjectRequest {
             id: Some(ObjectId {
+                version: 0,
                 bucket_name: bucket_name.to_string(),
                 object_key: object_key.to_string(),
             }),
@@ -429,6 +437,7 @@ async fn test_delete_object_grpc() {
     let response = client
         .head_object(Request::new(HeadObjectRequest {
             id: Some(ObjectId {
+                version: 0,
                 bucket_name: bucket_name.to_string(),
                 object_key: object_key.to_string(),
             }),
@@ -450,6 +459,7 @@ async fn test_error_handling_grpc() {
     let response = client
         .get_object(Request::new(GetObjectRequest {
             id: Some(ObjectId {
+                version: 0,
                 bucket_name: "non-existent-bucket".to_string(),
                 object_key: "some-key".to_string(),
             }),
@@ -477,6 +487,7 @@ async fn test_error_handling_grpc() {
     let response = client
         .head_object(Request::new(HeadObjectRequest {
             id: Some(ObjectId {
+                version: 0,
                 bucket_name: "non-existent-bucket".to_string(),
                 object_key: "some-key".to_string(),
             }),
@@ -490,6 +501,7 @@ async fn test_error_handling_grpc() {
     let response = client
         .delete_object(Request::new(DeleteObjectRequest {
             id: Some(ObjectId {
+                version: 0,
                 bucket_name: "non-existent-bucket".to_string(),
                 object_key: "some-key".to_string(),
             }),
@@ -525,6 +537,7 @@ async fn test_large_object_streaming_grpc() {
         PutObjectRequest {
             req: Some(grpc_server::object_storage::put_object_request::Req::Id(
                 ObjectId {
+                version: 0,
                     bucket_name: bucket_name.to_string(),
                     object_key: object_key.to_string(),
                 },
@@ -550,6 +563,7 @@ async fn test_large_object_streaming_grpc() {
     let response = client
         .get_object(Request::new(GetObjectRequest {
             id: Some(ObjectId {
+                version: 0,
                 bucket_name: bucket_name.to_string(),
                 object_key: object_key.to_string(),
             }),

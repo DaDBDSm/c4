@@ -4,23 +4,26 @@ use crate::migration::dto::{MigrationOperation, MigrationPlan};
 use crate::model::ObjectIdentifier;
 use grpc_server::object_storage::c4_client::C4Client;
 use grpc_server::object_storage::{ListBucketsRequest, ListObjectsRequest};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use tonic::transport::Channel;
 
 pub struct MigrationPlanner {
     client_pool: HashMap<String, C4Client<Channel>>,
     virtual_nodes_per_node: usize,
+    replication_factor: usize,
 }
 
 impl MigrationPlanner {
     pub fn new(
         client_pool: HashMap<String, C4Client<Channel>>,
         virtual_nodes_per_node: usize,
+        replication_factor: usize,
     ) -> Self {
         Self {
             client_pool,
             virtual_nodes_per_node,
+            replication_factor,
         }
     }
 
@@ -30,6 +33,7 @@ impl MigrationPlanner {
         new_nodes: Vec<Node>,
     ) -> Result<MigrationPlan, Box<dyn Error>> {
         let mut plan = MigrationPlan::new();
+        let mut processed_objects = HashSet::new(); // Track objects we've already planned
 
         let previous_ring =
             ConsistentHashRing::new(previous_nodes.clone(), self.virtual_nodes_per_node);
@@ -53,28 +57,35 @@ impl MigrationPlanner {
             };
 
             for object in objects {
-                let (previous_node, new_node) =
+                // Skip if we've already processed this object
+                let object_key = format!("{}/{}", object.bucket_name, object.object_key);
+                if processed_objects.contains(&object_key) {
+                    continue;
+                }
+                processed_objects.insert(object_key);
+
+                let (previous_node, new_nodes) =
                     self.check_object_location(&object, &previous_ring, &new_ring)?;
 
                 log::debug!(
-                    "Checking object {}/{} - previous node: {}, new node: {}",
+                    "Checking object {}/{} - previous node: {}, new nodes: {:?}",
                     object.bucket_name,
                     object.object_key,
                     previous_node.id,
-                    new_node.id
+                    new_nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
                 );
 
-                if previous_node.id != new_node.id {
+                if !new_nodes.iter().any(|n| n.id == previous_node.id) {
                     log::info!(
-                        "Object {}/{} needs migration: {} -> {}",
+                        "Object {}/{} needs migration: {} -> {:?}",
                         object.bucket_name,
                         object.object_key,
                         previous_node.id,
-                        new_node.id
+                        new_nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
                     );
                     plan.add_operation(MigrationOperation {
                         prev_node: previous_node.id.clone(),
-                        new_node: new_node.id.clone(),
+                        new_nodes: new_nodes.iter().map(|n| n.id.clone()).collect(),
                         object_key: object.object_key.clone(),
                         bucket_name: object.bucket_name.clone(),
                     });
@@ -138,22 +149,21 @@ impl MigrationPlanner {
         object: &ObjectIdentifier,
         previous_ring: &ConsistentHashRing,
         new_ring: &ConsistentHashRing,
-    ) -> Result<(Node, Node), Box<dyn Error>> {
+    ) -> Result<(Node, Vec<Node>), Box<dyn Error>> {
         let key = &get_key_for_object(&object.bucket_name, &object.object_key);
 
         let previous_node = previous_ring.get_node(key).unwrap();
-        let new_node = new_ring.get_node(key).unwrap();
+        let new_nodes = new_ring.get_n_nodes(key, self.replication_factor);
 
         log::debug!(
-            "Object {}/{} - previous ring selected node: {} (address: {}), new ring selected node: {} (address: {})",
+            "Object {}/{} - previous ring selected node: {} (address: {}), new ring selected nodes: {:?}",
             object.bucket_name,
             object.object_key,
             previous_node.id,
             previous_node.address,
-            new_node.id,
-            new_node.address
+            new_nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
         );
 
-        Ok((previous_node.clone(), new_node.clone()))
+        Ok((previous_node.clone(), new_nodes.into_iter().cloned().collect()))
     }
 }

@@ -21,6 +21,7 @@ struct ChunkMeta {
     length: u64,
     deleted: bool,
     created_at: i64,
+    version: u64,
 }
 
 /// Partitioned, asynchronous, thread-safe bytes storage.
@@ -73,6 +74,7 @@ impl PartitionedBytesStorage {
         &self,
         mut chunk_stream: T,
         chunk_id: u64,
+        version: u64,
     ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>>
     where
         T: Stream<Item = Vec<u8>> + Unpin + Send + 'static,
@@ -115,6 +117,7 @@ impl PartitionedBytesStorage {
                     length: total_len,
                     deleted: false,
                     created_at: Self::current_timestamp(),
+                    version,
                 },
             );
         }
@@ -129,6 +132,15 @@ impl PartitionedBytesStorage {
         let partition = self.partition_for(chunk_id);
         let part_idx = partition as usize;
         let index_lock = self.indexes[part_idx].clone();
+        // Acquire a read lock on the partition to avoid races with gc_partition() rewriting
+        // the underlying file while we read metadata based on stale offsets. gc_partition()
+        // takes a write lock on partition_locks[partition]; by also taking a read lock here
+        // we ensure that we either see the old file + old index consistently before GC starts
+        // or we wait until GC is finished and see the new (compacted) state. Without this, a
+        // window existed where GC had renamed the data file but not yet updated the in-memory
+        // index, allowing stale offsets to escape and cause corrupted reads.
+        let part_lock = self.partition_locks[part_idx].clone();
+        let _part_read_guard = part_lock.read().await;
 
         let meta = {
             let idx = index_lock.read().await;
@@ -150,6 +162,7 @@ impl PartitionedBytesStorage {
             size: meta.length,
             created_at: meta.created_at,
             partition,
+            version: meta.version,
         })
     }
 
@@ -275,6 +288,7 @@ impl PartitionedBytesStorage {
                         length: 0,
                         deleted: false,
                         created_at: meta.created_at,
+                        version: meta.version,
                     },
                 );
                 continue;
@@ -301,6 +315,7 @@ impl PartitionedBytesStorage {
                     length: meta.length,
                     deleted: false,
                     created_at: meta.created_at,
+                    version: meta.version,
                 },
             );
         }
@@ -333,6 +348,7 @@ pub struct ChunkMetadata {
     pub size: u64,
     pub created_at: i64,
     pub partition: u32,
+    pub version: u64,
 }
 
 /// Chunk data with metadata

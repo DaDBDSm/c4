@@ -116,6 +116,7 @@ async fn test_delete_bucket() {
         .expect("Failed to create bucket");
 
     let put_dto = PutObjectDTO {
+        version: 1,
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(b"test_data"),
@@ -187,6 +188,7 @@ async fn test_put_and_get_object() {
         .expect("Failed to create bucket");
 
     let put_dto = PutObjectDTO {
+        version: 1,
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(test_data),
@@ -200,6 +202,7 @@ async fn test_put_and_get_object() {
     assert_eq!(metadata.size, test_data.len() as u64);
 
     let put_dto = PutObjectDTO {
+        version: 1,
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(test_data),
@@ -248,6 +251,7 @@ async fn test_head_object() {
         .expect("Failed to create bucket");
 
     let put_dto = PutObjectDTO {
+        version: 1,
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(test_data),
@@ -292,6 +296,7 @@ async fn test_delete_object() {
         .expect("Failed to create bucket");
 
     let put_dto = PutObjectDTO {
+        version: 1,
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(test_data),
@@ -350,6 +355,7 @@ async fn test_list_objects() {
     for object_name in test_objects.iter() {
         let test_data = format!("Data for {}", object_name).into_bytes();
         let put_dto = PutObjectDTO {
+        version: 1,
             bucket_name: bucket_name.clone(),
             key: object_name.to_string(),
             stream: cursor_to_stream(&test_data),
@@ -501,6 +507,7 @@ async fn test_large_object() {
         .expect("Failed to create bucket");
 
     let put_dto = PutObjectDTO {
+        version: 1,
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(&large_data),
@@ -550,6 +557,7 @@ async fn test_empty_object() {
         .expect("Failed to create bucket");
 
     let put_dto = PutObjectDTO {
+        version: 1,
         bucket_name: bucket_name.clone(),
         key: object_key.clone(),
         stream: cursor_to_stream(empty_data),

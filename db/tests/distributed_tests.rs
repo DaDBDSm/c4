@@ -1,4 +1,4 @@
-use db::hashing::consistent::{ConsistentHashRing, Node};
+use master::hashing::consistent::{ConsistentHashRing, Node};
 use std::collections::HashSet;
 
 #[test]

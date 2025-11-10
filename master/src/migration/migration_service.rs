@@ -21,49 +21,53 @@ impl MigrationService {
             let source_client = self.client_pool.get(&operation.prev_node).ok_or_else(|| {
                 format!("Source client not found for node: {}", operation.prev_node)
             })?;
-            let destination_client =
-                self.client_pool.get(&operation.new_node).ok_or_else(|| {
-                    format!(
-                        "Destination client not found for node: {}",
-                        operation.new_node
-                    )
-                })?;
 
-            let object_id = ObjectId {
-                bucket_name: operation.bucket_name.clone(),
-                object_key: operation.object_key.clone(),
-            };
+            for new_node in &operation.new_nodes {
+                let destination_client =
+                    self.client_pool.get(new_node).ok_or_else(|| {
+                        format!(
+                            "Destination client not found for node: {}",
+                            new_node
+                        )
+                    })?;
 
-            // Ensure bucket exists on destination before migrating objects
-            self.ensure_bucket_exists(&destination_client, &operation.bucket_name)
-                .await?;
-
-            // stream data from source to destination
-            let get_request = tonic::Request::new(GetObjectRequest {
-                id: Some(object_id.clone()),
-            });
-            let mut get_response = source_client.clone().get_object(get_request).await?;
-
-            let put_request_stream = async_stream::stream! {
-                // first message: send object ID
-                yield PutObjectRequest {
-                    req: Some(grpc_server::object_storage::put_object_request::Req::Id(object_id.clone())),
+                let object_id = ObjectId {
+                    bucket_name: operation.bucket_name.clone(),
+                    object_key: operation.object_key.clone(),
+                    version: 0, // Version will be set by the destination
                 };
 
-                while let Some(chunk) = get_response.get_mut().message().await.transpose() {
-                    if let Ok(chunk) = chunk {
-                        yield PutObjectRequest {
-                            req: Some(grpc_server::object_storage::put_object_request::Req::ObjectPart(chunk.object_part)),
-                        };
+                // Ensure bucket exists on destination before migrating objects
+                self.ensure_bucket_exists(&destination_client, &operation.bucket_name)
+                    .await?;
+
+                // stream data from source to destination
+                let get_request = tonic::Request::new(GetObjectRequest {
+                    id: Some(object_id.clone()),
+                });
+                let mut get_response = source_client.clone().get_object(get_request).await?;
+
+                let put_request_stream = async_stream::stream! {
+                    // first message: send object ID
+                    yield PutObjectRequest {
+                        req: Some(grpc_server::object_storage::put_object_request::Req::Id(object_id.clone())),
+                    };
+
+                    while let Some(chunk) = get_response.get_mut().message().await.transpose() {
+                        if let Ok(chunk) = chunk {
+                            yield PutObjectRequest {
+                                req: Some(grpc_server::object_storage::put_object_request::Req::ObjectPart(chunk.object_part)),
+                            };
+                        }
                     }
-                }
-            };
+                };
 
-            // Convert the stream to a tonic::Request
-            let put_request = tonic::Request::new(put_request_stream);
+                // Convert the stream to a tonic::Request
+                let put_request = tonic::Request::new(put_request_stream);
 
-            // Send the stream to the destination client
-            let _put_response = destination_client.clone().put_object(put_request).await?;
+                // Send the stream to the destination client
+                let _put_response = destination_client.clone().put_object(put_request).await?;
+            }
         }
 
         Ok(())

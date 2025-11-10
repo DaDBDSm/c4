@@ -138,7 +138,7 @@ impl ObjectStorage for ObjectStorageSimple {
 
         let size = self
             .bytes_storage
-            .save_chunk(dto.stream, object_chunk_id)
+            .save_chunk(dto.stream, object_chunk_id, dto.version)
             .await
             .map_err(|e| {
                 log::error!(
@@ -192,6 +192,7 @@ impl ObjectStorage for ObjectStorageSimple {
                     StorageError::Internal("System time error".to_string())
                 })?
                 .as_millis() as i64,
+            version: dto.version,
         })
     }
 
@@ -318,14 +319,13 @@ impl ObjectStorage for ObjectStorageSimple {
                     ))
                 })?;
 
-            let object_metadata = ObjectMetadata {
-                bucket_name: dto.bucket_name.to_string(),
-                key: object_key.clone(),
-                size: chunk_metadata.size,
-                created_at: chunk_metadata.created_at,
-            };
-
-            metas.push(object_metadata);
+        let object_metadata = ObjectMetadata {
+            bucket_name: dto.bucket_name.to_string(),
+            key: object_key.clone(),
+            size: chunk_metadata.size,
+            created_at: chunk_metadata.created_at,
+            version: chunk_metadata.version,
+        };            metas.push(object_metadata);
         }
 
         log::debug!(
@@ -404,6 +404,7 @@ impl ObjectStorage for ObjectStorageSimple {
             key: dto.key.clone(),
             size: chunk_metadata.size,
             created_at: chunk_metadata.created_at,
+            version: chunk_metadata.version,
         };
 
         Ok(object_metadata)

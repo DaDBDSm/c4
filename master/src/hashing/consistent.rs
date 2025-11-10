@@ -72,9 +72,31 @@ impl ConsistentHashRing {
         Self::add_node_to_ring(&mut self.ring, &node, virtual_nodes_per_node);
     }
 
-    /// Remove a node from the ring
-    pub fn remove_node(&mut self, node_id: &str) {
-        self.ring.retain(|_, node| !node.id.starts_with(node_id));
+    pub fn get_n_nodes(&self, key: &str, n: usize) -> Vec<&Node> {
+        if self.ring.is_empty() || n == 0 {
+            return vec![];
+        }
+        let hash = Self::hash_key(key);
+        let mut result = Vec::new();
+
+        // Iterate starting from hash.. and then wrap-around
+        for (_, node) in self.ring.range(hash..) {
+            if !result.iter().any(|existing: &&Node| existing.id == node.id) {
+                result.push(node);
+                if result.len() == n {
+                    return result;
+                }
+            }
+        }
+        for (_, node) in &self.ring {
+            if result.len() == n {
+                break;
+            }
+            if !result.iter().any(|existing: &&Node| existing.id == node.id) {
+                result.push(node);
+            }
+        }
+        result
     }
 }
 
@@ -149,11 +171,21 @@ mod tests {
     }
 
     #[test]
-    fn test_hash_key_consistency() {
-        let key = "test_key";
-        let hash1 = ConsistentHashRing::hash_key(key);
-        let hash2 = ConsistentHashRing::hash_key(key);
+    fn test_get_n_nodes() {
+        let nodes = create_test_nodes();
+        let ring = ConsistentHashRing::new(nodes, 10);
 
-        assert_eq!(hash1, hash2);
+        let replicas = ring.get_n_nodes("test_key", 2);
+        assert_eq!(replicas.len(), 2);
+        assert_ne!(replicas[0].id, replicas[1].id);
+
+        // Same key should return same nodes
+        let replicas2 = ring.get_n_nodes("test_key", 2);
+        assert_eq!(replicas[0].id, replicas2[0].id);
+        assert_eq!(replicas[1].id, replicas2[1].id);
+
+        // Request more than available nodes
+        let all_replicas = ring.get_n_nodes("test_key", 5);
+        assert_eq!(all_replicas.len(), 3); // Only 3 nodes available
     }
 }

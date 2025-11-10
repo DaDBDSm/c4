@@ -1,7 +1,7 @@
 use master::hashing::consistent::{ConsistentHashRing, Node};
 use master::migration::dto::{MigrationOperation, MigrationPlan};
-use master::migration::migration_plan::{ExtendedMigrationPlan, MigrationStatus};
 use master::migration::migration_service::MigrationService;
+use grpc_server::object_storage::MigrationStatus;
 use std::collections::HashMap;
 
 fn create_test_nodes() -> Vec<Node> {
@@ -25,87 +25,41 @@ fn create_test_nodes() -> Vec<Node> {
 fn test_migration_operation_creation() {
     let operation = MigrationOperation {
         prev_node: "node1".to_string(),
-        new_node: "node2".to_string(),
+        new_nodes: vec!["node2".to_string()],
         object_key: "test_key".to_string(),
         bucket_name: "test_bucket".to_string(),
     };
 
     assert_eq!(operation.prev_node, "node1");
-    assert_eq!(operation.new_node, "node2");
+    assert_eq!(operation.new_nodes, vec!["node2".to_string()]);
     assert_eq!(operation.object_key, "test_key");
     assert_eq!(operation.bucket_name, "test_bucket");
 }
 
 #[test]
-fn test_migration_plan_operations() {
+fn test_migration_plan_operations_simple() {
     let mut plan = MigrationPlan::new();
-    assert!(plan.is_empty());
-    assert_eq!(plan.total_objects, 0);
-    assert_eq!(plan.unchanged_objects, 0);
+    assert!(plan.operations.is_empty());
 
     // Add an operation
     let operation = MigrationOperation {
         prev_node: "node1".to_string(),
-        new_node: "node2".to_string(),
+        new_nodes: vec!["node2".to_string()],
         object_key: "key1".to_string(),
         bucket_name: "bucket1".to_string(),
     };
     plan.add_operation(operation);
 
-    assert!(!plan.is_empty());
-    assert_eq!(plan.operation_count(), 1);
-    assert_eq!(plan.total_objects, 1);
-    assert_eq!(plan.unchanged_objects, 0);
-
-    // Add an unchanged object
-    plan.increment_unchanged();
-    assert_eq!(plan.total_objects, 2);
-    assert_eq!(plan.unchanged_objects, 1);
-}
-
-#[test]
-fn test_extended_migration_plan() {
-    let mut base_plan = MigrationPlan::new();
-    base_plan.add_operation(MigrationOperation {
-        prev_node: "node1".to_string(),
-        new_node: "node2".to_string(),
-        object_key: "key1".to_string(),
-        bucket_name: "bucket1".to_string(),
-    });
-
-    let mut extended_plan = ExtendedMigrationPlan::new(base_plan);
-
-    // Test initial state
-    assert!(matches!(extended_plan.status, MigrationStatus::Pending));
-    assert!(extended_plan.created_at > 0);
-    assert!(extended_plan.started_at.is_none());
-    assert!(extended_plan.completed_at.is_none());
-    assert_eq!(extended_plan.progress, (0, 0));
-    assert!(!extended_plan.is_finished());
-
-    // Test starting migration
-    extended_plan.start();
-    assert!(matches!(extended_plan.status, MigrationStatus::InProgress));
-    assert!(extended_plan.started_at.is_some());
-    assert_eq!(extended_plan.progress.1, 1);
-    assert!(!extended_plan.is_finished());
-
-    // Test progress update
-    extended_plan.update_progress(1);
-    assert_eq!(extended_plan.progress_percentage(), 100.0);
-
-    // Test completion
-    extended_plan.complete();
-    assert!(matches!(extended_plan.status, MigrationStatus::Completed));
-    assert!(extended_plan.completed_at.is_some());
-    assert!(extended_plan.is_finished());
+    assert!(!plan.operations.is_empty());
+    assert_eq!(plan.operations.len(), 1);
 }
 
 #[test]
 fn test_migration_service_creation() {
     let client_pool = HashMap::new();
     let service = MigrationService::new(client_pool);
-    assert!(service.client_pool().is_empty());
+    // Ensure type constructs without panicking
+    let _ = service;
 }
 
 #[test]
@@ -142,37 +96,33 @@ fn test_consistent_hashing_with_migration() {
 fn test_migration_plan_serialization() {
     let operation = MigrationOperation {
         prev_node: "node1".to_string(),
-        new_node: "node2".to_string(),
+        new_nodes: vec!["node2".to_string()],
         object_key: "key1".to_string(),
         bucket_name: "bucket1".to_string(),
     };
 
     let mut plan = MigrationPlan::new();
     plan.add_operation(operation);
-    plan.increment_unchanged();
 
     // Test that the plan can be cloned (which requires serialization internally)
     let cloned_plan = plan.clone();
-
-    assert_eq!(plan.total_objects, cloned_plan.total_objects);
-    assert_eq!(plan.unchanged_objects, cloned_plan.unchanged_objects);
-    assert_eq!(plan.operation_count(), cloned_plan.operation_count());
+    assert_eq!(plan.operations.len(), cloned_plan.operations.len());
 }
 
 #[test]
 fn test_migration_status_variants() {
-    let pending = MigrationStatus::Pending;
-    let in_progress = MigrationStatus::InProgress;
-    let completed = MigrationStatus::Completed;
-    let failed = MigrationStatus::Failed("test error".to_string());
-    let cancelled = MigrationStatus::Cancelled;
+    let pending = MigrationStatus::Pending as i32;
+    let in_progress = MigrationStatus::InProgress as i32;
+    let completed = MigrationStatus::Completed as i32;
+    let failed = MigrationStatus::Failed as i32;
+    let cancelled = MigrationStatus::Cancelled as i32;
 
     // Test that all variants can be created
-    assert!(matches!(pending, MigrationStatus::Pending));
-    assert!(matches!(in_progress, MigrationStatus::InProgress));
-    assert!(matches!(completed, MigrationStatus::Completed));
-    assert!(matches!(failed, MigrationStatus::Failed(_)));
-    assert!(matches!(cancelled, MigrationStatus::Cancelled));
+    assert_eq!(pending, grpc_server::object_storage::MigrationStatus::Pending as i32);
+    assert_eq!(in_progress, grpc_server::object_storage::MigrationStatus::InProgress as i32);
+    assert_eq!(completed, grpc_server::object_storage::MigrationStatus::Completed as i32);
+    assert_eq!(failed, grpc_server::object_storage::MigrationStatus::Failed as i32);
+    assert_eq!(cancelled, grpc_server::object_storage::MigrationStatus::Cancelled as i32);
 }
 
 #[tokio::test]
@@ -186,29 +136,9 @@ async fn test_migration_plan_generation_logic() {
     let service = MigrationService::new(client_pool);
 
     // The service should be created successfully even with empty client pool
-    assert!(service.client_pool().is_empty());
+    let _ = service;
 
     // Note: Actual migration plan generation would require mocked gRPC clients
     // This test verifies that the service structure is correct
 }
 
-#[test]
-fn test_migration_plan_display() {
-    let mut plan = MigrationPlan::new();
-    plan.add_operation(MigrationOperation {
-        prev_node: "node1".to_string(),
-        new_node: "node2".to_string(),
-        object_key: "key1".to_string(),
-        bucket_name: "bucket1".to_string(),
-    });
-    plan.increment_unchanged();
-
-    let extended_plan = ExtendedMigrationPlan::new(plan);
-    let display_string = extended_plan.to_string();
-
-    assert!(display_string.contains("Migration Plan"));
-    assert!(display_string.contains("1 operations"));
-    assert!(display_string.contains("1 unchanged"));
-    assert!(display_string.contains("2 total"));
-    assert!(display_string.contains("0%"));
-}

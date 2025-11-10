@@ -14,5 +14,9 @@ env_logger = "0.11"
 clap = { version = "4.0", features = ["derive"] }
 chrono = { version = "0.4" }
 
+[dev-dependencies]
+db = { path = "../db" }
+tempfile = "3.23"
+
 [build-dependencies]
 tonic-build = "0.14.2"

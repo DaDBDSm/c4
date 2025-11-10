@@ -38,6 +38,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let base_dir = std::path::PathBuf::from(&args.base_dir);
 
+    // Create base directory if it doesn't exist
+    if !base_dir.exists() {
+        log::info!("Creating base directory: {:?}", base_dir);
+        std::fs::create_dir_all(&base_dir)?;
+    }
+
     let bytes_storage = PartitionedBytesStorage::new(base_dir.join("data"), 4);
     let buckets_metadata_storage =
         BucketsMetadataStorage::new(base_dir.join("metadata.json").to_string_lossy().to_string())
