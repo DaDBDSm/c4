@@ -1,7 +1,8 @@
 use std::{collections::HashMap, error::Error};
 
 use grpc_server::object_storage::{
-    CreateBucketRequest, GetObjectRequest, ObjectId, PutObjectRequest, c4_client::C4Client,
+    CreateBucketRequest, DeleteObjectRequest, GetObjectRequest, ObjectId, PutObjectRequest,
+    c4_client::C4Client,
 };
 use tonic::transport::Channel;
 
@@ -18,23 +19,32 @@ impl MigrationService {
 
     pub async fn migrate_data(&self, migration_plan: MigrationPlan) -> Result<(), Box<dyn Error>> {
         for operation in migration_plan.operations {
-            let source_client = self.client_pool.get(&operation.prev_node).ok_or_else(|| {
-                format!("Source client not found for node: {}", operation.prev_node)
-            })?;
+            let new_nodes_without_object = operation
+                .new_nodes
+                .iter()
+                .filter(|n| !operation.previous_nodes.contains(n))
+                .collect::<Vec<_>>();
 
-            for new_node in &operation.new_nodes {
-                let destination_client =
-                    self.client_pool.get(new_node).ok_or_else(|| {
-                        format!(
-                            "Destination client not found for node: {}",
-                            new_node
-                        )
-                    })?;
+            let node_to_take_data_from = operation.previous_nodes.first().unwrap();
+
+            let source_client = self
+                .client_pool
+                .get(node_to_take_data_from)
+                .ok_or_else(|| {
+                    format!(
+                        "Source client not found for node: {}",
+                        node_to_take_data_from
+                    )
+                })?;
+
+            for new_node in new_nodes_without_object {
+                let destination_client = self.client_pool.get(new_node).ok_or_else(|| {
+                    format!("Destination client not found for node: {}", new_node)
+                })?;
 
                 let object_id = ObjectId {
                     bucket_name: operation.bucket_name.clone(),
                     object_key: operation.object_key.clone(),
-                    version: 0, // Version will be set by the destination
                 };
 
                 // Ensure bucket exists on destination before migrating objects
@@ -67,6 +77,37 @@ impl MigrationService {
 
                 // Send the stream to the destination client
                 let _put_response = destination_client.clone().put_object(put_request).await?;
+            }
+
+            // also we should delete the nodes where the object is not needed anymore
+            let nodes_to_delete_object_from = operation
+                .previous_nodes
+                .iter()
+                .filter(|node| !operation.new_nodes.contains(node))
+                .collect::<Vec<_>>();
+
+            for node in nodes_to_delete_object_from {
+                let client = self.client_pool.get(node).ok_or_else(|| {
+                    format!(
+                        "Source client not found for node: {}",
+                        node_to_take_data_from
+                    )
+                })?;
+
+                let delete_request = tonic::Request::new(DeleteObjectRequest {
+                    id: Some(ObjectId {
+                        bucket_name: operation.bucket_name.clone(),
+                        object_key: operation.object_key.clone(),
+                    }),
+                });
+
+                log::debug!(
+                    "Deleting object {:?} on node {:?}",
+                    operation.object_key,
+                    node
+                );
+
+                let _ = client.clone().delete_object(delete_request).await;
             }
         }
 

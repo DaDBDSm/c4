@@ -64,39 +64,43 @@ impl MigrationPlanner {
                 }
                 processed_objects.insert(object_key);
 
-                let (previous_node, new_nodes) =
+                let (previous_nodes, new_nodes) =
                     self.check_object_location(&object, &previous_ring, &new_ring)?;
 
                 log::debug!(
-                    "Checking object {}/{} - previous node: {}, new nodes: {:?}",
+                    "Checking object {}/{} - previous nodes: {:?}, new nodes: {:?}",
                     object.bucket_name,
                     object.object_key,
-                    previous_node.id,
+                    previous_nodes.iter().map(|n| &n.id).collect::<Vec<_>>(),
                     new_nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
                 );
 
-                if !new_nodes.iter().any(|n| n.id == previous_node.id) {
-                    log::info!(
-                        "Object {}/{} needs migration: {} -> {:?}",
-                        object.bucket_name,
-                        object.object_key,
-                        previous_node.id,
-                        new_nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
-                    );
-                    plan.add_operation(MigrationOperation {
-                        prev_node: previous_node.id.clone(),
-                        new_nodes: new_nodes.iter().map(|n| n.id.clone()).collect(),
-                        object_key: object.object_key.clone(),
-                        bucket_name: object.bucket_name.clone(),
-                    });
-                } else {
+                // if previous nodes == new nodes, skip
+                if previous_nodes == new_nodes {
                     log::debug!(
-                        "Object {}/{} remains on same node: {}",
+                        "No change in nodes for object {}/{}",
                         object.bucket_name,
-                        object.object_key,
-                        previous_node.id
+                        object.object_key
                     );
+                    continue;
                 }
+
+                let prev_node_ids = previous_nodes
+                    .iter()
+                    .map(|node| node.id.clone())
+                    .collect::<Vec<_>>();
+
+                let new_node_ids = new_nodes
+                    .iter()
+                    .map(|node| node.id.clone())
+                    .collect::<Vec<_>>();
+
+                plan.add_operation(MigrationOperation {
+                    previous_nodes: prev_node_ids,
+                    new_nodes: new_node_ids,
+                    object_key: object.object_key.clone(),
+                    bucket_name: object.bucket_name.clone(),
+                });
             }
         }
 
@@ -149,21 +153,23 @@ impl MigrationPlanner {
         object: &ObjectIdentifier,
         previous_ring: &ConsistentHashRing,
         new_ring: &ConsistentHashRing,
-    ) -> Result<(Node, Vec<Node>), Box<dyn Error>> {
+    ) -> Result<(Vec<Node>, Vec<Node>), Box<dyn Error>> {
         let key = &get_key_for_object(&object.bucket_name, &object.object_key);
 
-        let previous_node = previous_ring.get_node(key).unwrap();
+        let previous_node = previous_ring.get_n_nodes(key, self.replication_factor);
         let new_nodes = new_ring.get_n_nodes(key, self.replication_factor);
 
         log::debug!(
-            "Object {}/{} - previous ring selected node: {} (address: {}), new ring selected nodes: {:?}",
+            "Object {}/{} - previous ring selected nodes: {:?}, new ring selected nodes: {:?}",
             object.bucket_name,
             object.object_key,
-            previous_node.id,
-            previous_node.address,
-            new_nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+            previous_node.iter().map(|n| &n.id).collect::<Vec<_>>(),
+            new_nodes.iter().map(|n| &n.id).collect::<Vec<_>>(),
         );
 
-        Ok((previous_node.clone(), new_nodes.into_iter().cloned().collect()))
+        Ok((
+            previous_node.into_iter().cloned().collect(),
+            new_nodes.into_iter().cloned().collect(),
+        ))
     }
 }

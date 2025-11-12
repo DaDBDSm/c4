@@ -1,6 +1,6 @@
 #[derive(Debug, Clone, PartialEq)]
 pub struct MigrationOperation {
-    pub prev_node: String,
+    pub previous_nodes: Vec<String>,
     pub new_nodes: Vec<String>,
     pub object_key: String,
     pub bucket_name: String,

@@ -28,7 +28,6 @@ pub struct ObjectMetadata {
     pub key: ObjectKey,
     pub size: u64,
     pub created_at: i64,
-    pub version: u64,
 }
 
 pub struct CreateBucketDTO {
@@ -48,7 +47,6 @@ pub struct PutObjectDTO {
     pub bucket_name: BucketName,
     pub key: ObjectKey,
     pub stream: Box<dyn Stream<Item = Vec<u8>> + Unpin + Send>,
-    pub version: u64,
 }
 
 pub struct GetObjectDTO {

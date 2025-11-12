@@ -164,7 +164,6 @@ impl C4 for C4Handler {
             bucket_name: object_id.bucket_name.clone(),
             key: object_id.object_key.clone(),
             stream: Box::new(byte_stream),
-            version: object_id.version,
         };
 
         let metadata = match self.c4_storage.put_object(dto).await {
@@ -209,11 +208,9 @@ impl C4 for C4Handler {
                 id: Some(ObjectId {
                     bucket_name: metadata.bucket_name,
                     object_key: metadata.key,
-                    version: metadata.version,
                 }),
                 size: metadata.size,
                 created_at: metadata.created_at,
-                version: metadata.version,
             }),
         };
 
@@ -342,11 +339,9 @@ impl C4 for C4Handler {
                             id: Some(ObjectId {
                                 bucket_name: object_metadata.bucket_name.clone(),
                                 object_key: object_metadata.key.clone(),
-                                version: object_metadata.version,
                             }),
                             size: object_metadata.size,
                             created_at: object_metadata.created_at,
-                            version: object_metadata.version,
                         })
                         .collect(),
                 }))
@@ -404,11 +399,9 @@ impl C4 for C4Handler {
                         id: Some(ObjectId {
                             bucket_name: metadata.bucket_name.clone(),
                             object_key: metadata.key.clone(),
-                            version: metadata.version,
                         }),
                         size: metadata.size,
                         created_at: metadata.created_at,
-                        version: metadata.version,
                     }),
                 }))
             }
