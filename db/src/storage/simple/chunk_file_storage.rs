@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     io::SeekFrom,
@@ -15,12 +16,19 @@ use tokio_stream::StreamExt;
 use tokio_stream::{Stream, wrappers::ReceiverStream};
 
 /// Metadata for a stored chunk (per-partition)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChunkMeta {
     offset: u64,
     length: u64,
     deleted: bool,
     created_at: i64,
+}
+
+/// Serializable index data for a partition
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PartitionIndex {
+    partition: u32,
+    entries: HashMap<u64, ChunkMeta>,
 }
 
 /// Partitioned, asynchronous, thread-safe bytes storage.
@@ -52,6 +60,33 @@ impl PartitionedBytesStorage {
             indexes,
             partition_locks,
         }
+    }
+
+    /// Create a new PartitionedBytesStorage and load existing indexes from disk
+    pub async fn new_with_persistence(
+        base_dir: PathBuf,
+        partition_count: u32,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        assert!(partition_count > 0, "partition_count must be > 0");
+
+        let mut indexes = Vec::with_capacity(partition_count as usize);
+        let mut partition_locks = Vec::with_capacity(partition_count as usize);
+        for _ in 0..partition_count {
+            indexes.push(Arc::new(RwLock::new(HashMap::new())));
+            partition_locks.push(Arc::new(RwLock::new(())));
+        }
+
+        let storage = Self {
+            base_dir: base_dir.clone(),
+            partition_count,
+            indexes,
+            partition_locks,
+        };
+
+        // Try to load existing indexes
+        storage.load_indexes().await?;
+
+        Ok(storage)
     }
 
     fn partition_for(&self, chunk_id: u64) -> u32 {
@@ -327,6 +362,102 @@ impl PartitionedBytesStorage {
             self.gc_partition(p).await?;
         }
         Ok(())
+    }
+
+    /// Save all partition indexes to disk
+    pub async fn save_indexes(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        fs::create_dir_all(&self.base_dir).await?;
+
+        for partition in 0..self.partition_count {
+            let part_idx = partition as usize;
+            let index_lock = self.indexes[part_idx].clone();
+
+            let entries = {
+                let idx = index_lock.read().await;
+                idx.clone()
+            };
+
+            // Only save if there are entries
+            if !entries.is_empty() {
+                let partition_index = PartitionIndex { partition, entries };
+
+                let index_path = self.index_file_path(partition);
+                let json_data = serde_json::to_string_pretty(&partition_index)?;
+                fs::write(&index_path, json_data).await?;
+                log::debug!(
+                    "Saved index for partition {} to {:?}",
+                    partition,
+                    index_path
+                );
+            }
+        }
+
+        log::info!("Successfully saved all partition indexes");
+        Ok(())
+    }
+
+    /// Load all partition indexes from disk
+    async fn load_indexes(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut loaded_count = 0;
+
+        for partition in 0..self.partition_count {
+            let index_path = self.index_file_path(partition);
+
+            if index_path.exists() {
+                match fs::read_to_string(&index_path).await {
+                    Ok(json_data) => match serde_json::from_str::<PartitionIndex>(&json_data) {
+                        Ok(partition_index) => {
+                            if partition_index.partition == partition {
+                                let part_idx = partition as usize;
+                                let index_lock = self.indexes[part_idx].clone();
+
+                                let mut idx = index_lock.write().await;
+                                *idx = partition_index.entries;
+                                loaded_count += 1;
+                                log::debug!(
+                                    "Loaded index for partition {} from {:?}",
+                                    partition,
+                                    index_path
+                                );
+                            } else {
+                                log::warn!(
+                                    "Index file for partition {} contains data for partition {}, skipping",
+                                    partition,
+                                    partition_index.partition
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "Failed to parse index file for partition {}: {}, skipping",
+                                partition,
+                                e
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        log::warn!(
+                            "Failed to read index file for partition {}: {}, skipping",
+                            partition,
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        if loaded_count > 0 {
+            log::info!("Successfully loaded {} partition indexes", loaded_count);
+        } else {
+            log::info!("No existing partition indexes found, starting with empty indexes");
+        }
+
+        Ok(())
+    }
+
+    /// Get the file path for a partition's index
+    fn index_file_path(&self, partition: u32) -> PathBuf {
+        self.base_dir.join(format!("part_{partition}_index.json"))
     }
 }
 
