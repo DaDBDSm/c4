@@ -4,10 +4,8 @@ use db::storage::simple::buckets_metadata_storage::BucketsMetadataStorage;
 use db::storage::simple::chunk_file_storage::PartitionedBytesStorage;
 use grpc_server::object_storage;
 use std::{error::Error, net::SocketAddr};
-use tokio::signal;
 use tonic::transport::Server;
 
-/// Storage node for distributed object storage
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -24,7 +22,7 @@ struct Args {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
     env_logger::builder()
-        .filter_level(log::LevelFilter::Info)
+        .filter_level(log::LevelFilter::Debug)
         .init();
 
     let args = Args::parse();
@@ -39,7 +37,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let base_dir = std::path::PathBuf::from(&args.base_dir);
 
-    // Create base directory if it doesn't exist
     if !base_dir.exists() {
         log::info!("Creating base directory: {:?}", base_dir);
         std::fs::create_dir_all(&base_dir)?;
@@ -49,7 +46,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .expect("Failed to create partitioned bytes storage");
     let buckets_metadata_storage =
-        BucketsMetadataStorage::new(base_dir.join("metadata.json").to_string_lossy().to_string())
+        BucketsMetadataStorage::new(base_dir.join("metadata.c4").to_string_lossy().to_string())
             .await
             .expect("Failed to create buckets metadata storage");
 
@@ -65,46 +62,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     log::info!("Server started successfully on {}", addr);
 
-    // Setup graceful shutdown
-    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    let mut server_handle = tokio::spawn(async move {
-        if let Err(e) = server
-            .serve_with_shutdown(addr, async {
-                rx.await.ok();
-            })
-            .await
-        {
-            log::error!("Server error: {}", e);
-        }
-    });
-
-    // Wait for shutdown signal
-    let shutdown_reason = tokio::select! {
-        _ = signal::ctrl_c() => {
-            log::info!("Received shutdown signal, saving indexes...");
-            "ctrl_c"
-        }
-        _result = &mut server_handle => {
-            log::info!("Server stopped unexpectedly");
-            "server_stopped"
-        }
-    };
-
-    // Save indexes before shutdown (only if we received ctrl_c)
-    if shutdown_reason == "ctrl_c" {
-        log::info!("Saving partition indexes...");
-        if let Err(e) = bytes_storage.save_indexes().await {
-            log::error!("Failed to save partition indexes: {}", e);
-        } else {
-            log::info!("Successfully saved partition indexes");
-        }
-    }
-
-    // Signal server to shutdown (if it's still running)
-    let _ = tx.send(());
-
-    // Wait for server to finish
-    let _ = server_handle.await;
+    server.serve(addr).await?;
 
     log::info!("C4 storage node shutdown complete");
     Ok(())

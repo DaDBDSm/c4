@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize};
+use encoder::{Field, Value, decode_value, encode_value};
 use std::{
     collections::HashMap,
-    io::SeekFrom,
+    io::{Cursor, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -15,8 +15,7 @@ use tokio::{
 use tokio_stream::StreamExt;
 use tokio_stream::{Stream, wrappers::ReceiverStream};
 
-/// Metadata for a stored chunk (per-partition)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct ChunkMeta {
     offset: u64,
     length: u64,
@@ -24,15 +23,73 @@ struct ChunkMeta {
     created_at: i64,
 }
 
-/// Serializable index data for a partition
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PartitionIndex {
-    partition: u32,
-    entries: HashMap<u64, ChunkMeta>,
+impl ChunkMeta {
+    fn to_value(&self) -> Value {
+        Value::Message(vec![
+            Field {
+                number: 1,
+                value: Value::Int64(self.offset as i64),
+            },
+            Field {
+                number: 2,
+                value: Value::Int64(self.length as i64),
+            },
+            Field {
+                number: 3,
+                value: Value::Bool(self.deleted),
+            },
+            Field {
+                number: 4,
+                value: Value::Int64(self.created_at),
+            },
+        ])
+    }
+
+    fn from_value(value: Value) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        if let Value::Message(fields) = value {
+            let mut offset = 0u64;
+            let mut length = 0u64;
+            let mut deleted = false;
+            let mut created_at = 0i64;
+
+            for field in fields {
+                match field.number {
+                    1 => {
+                        if let Value::Int64(val) = field.value {
+                            offset = val as u64;
+                        }
+                    }
+                    2 => {
+                        if let Value::Int64(val) = field.value {
+                            length = val as u64;
+                        }
+                    }
+                    3 => {
+                        if let Value::Bool(val) = field.value {
+                            deleted = val;
+                        }
+                    }
+                    4 => {
+                        if let Value::Int64(val) = field.value {
+                            created_at = val;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Ok(ChunkMeta {
+                offset,
+                length,
+                deleted,
+                created_at,
+            })
+        } else {
+            Err("Invalid value type for ChunkMeta".into())
+        }
+    }
 }
 
-/// Partitioned, asynchronous, thread-safe bytes storage.
-/// Each partition is stored in a separate file `part_{n}.bin`.
 #[derive(Clone)]
 pub struct PartitionedBytesStorage {
     base_dir: PathBuf,
@@ -62,7 +119,6 @@ impl PartitionedBytesStorage {
         }
     }
 
-    /// Create a new PartitionedBytesStorage and load existing indexes from disk
     pub async fn new_with_persistence(
         base_dir: PathBuf,
         partition_count: u32,
@@ -83,7 +139,6 @@ impl PartitionedBytesStorage {
             partition_locks,
         };
 
-        // Try to load existing indexes
         storage.load_indexes().await?;
 
         Ok(storage)
@@ -153,6 +208,8 @@ impl PartitionedBytesStorage {
                 },
             );
         }
+
+        self.save_partition_index(partition).await?;
 
         Ok(total_len)
     }
@@ -247,10 +304,15 @@ impl PartitionedBytesStorage {
         let part_idx = partition as usize;
         let index_lock = self.indexes[part_idx].clone();
 
-        let mut idx = index_lock.write().await;
-        if let Some(meta) = idx.get_mut(&chunk_id) {
-            meta.deleted = true;
+        {
+            let mut idx = index_lock.write().await;
+            if let Some(meta) = idx.get_mut(&chunk_id) {
+                meta.deleted = true;
+            }
         }
+
+        self.save_partition_index(partition).await?;
+
         Ok(())
     }
 
@@ -354,6 +416,8 @@ impl PartitionedBytesStorage {
             *idx = new_index_map;
         }
 
+        self.save_partition_index(partition).await?;
+
         Ok(())
     }
 
@@ -364,39 +428,100 @@ impl PartitionedBytesStorage {
         Ok(())
     }
 
-    /// Save all partition indexes to disk
-    pub async fn save_indexes(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        fs::create_dir_all(&self.base_dir).await?;
+    async fn save_partition_index(
+        &self,
+        partition: u32,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        log::debug!(
+            "Starting to save partition index for partition {}",
+            partition
+        );
 
-        for partition in 0..self.partition_count {
-            let part_idx = partition as usize;
-            let index_lock = self.indexes[part_idx].clone();
+        let part_idx = partition as usize;
+        let index_lock = self.indexes[part_idx].clone();
 
-            let entries = {
-                let idx = index_lock.read().await;
-                idx.clone()
-            };
+        let entries = {
+            log::debug!("Acquiring read lock on partition index");
+            let idx: tokio::sync::RwLockReadGuard<'_, HashMap<u64, ChunkMeta>> =
+                index_lock.read().await;
+            idx.clone()
+        };
 
-            // Only save if there are entries
-            if !entries.is_empty() {
-                let partition_index = PartitionIndex { partition, entries };
+        log::debug!(
+            "Partition {} has {} entries to save",
+            partition,
+            entries.len()
+        );
 
-                let index_path = self.index_file_path(partition);
-                let json_data = serde_json::to_string_pretty(&partition_index)?;
-                fs::write(&index_path, json_data).await?;
-                log::debug!(
-                    "Saved index for partition {} to {:?}",
-                    partition,
-                    index_path
-                );
+        if !entries.is_empty() {
+            log::debug!("Converting {} entries to encoder format", entries.len());
+
+            let mut entry_fields = Vec::new();
+            for (chunk_id, meta) in entries {
+                let chunk_entry = Value::Message(vec![
+                    Field {
+                        number: 1,
+                        value: Value::Int64(chunk_id as i64),
+                    },
+                    Field {
+                        number: 2,
+                        value: meta.to_value(),
+                    },
+                ]);
+                entry_fields.push(Field {
+                    number: chunk_id as u32,
+                    value: chunk_entry,
+                });
             }
+
+            log::debug!("Creating partition index structure");
+            let partition_index = Value::Message(vec![
+                Field {
+                    number: 1,
+                    value: Value::Int32(partition as i32),
+                },
+                Field {
+                    number: 2,
+                    value: Value::Message(entry_fields),
+                },
+            ]);
+
+            let index_path = self.index_file_path(partition);
+            log::debug!("Encoding partition index data");
+
+            let encoded_data = encode_value(&partition_index).map_err(|e| {
+                log::error!(
+                    "Failed to encode partition index for partition {}: {}",
+                    partition,
+                    e
+                );
+                e
+            })?;
+
+            log::debug!(
+                "Successfully encoded partition index to {} bytes, writing to file: {:?}",
+                encoded_data.len(),
+                index_path
+            );
+
+            fs::write(&index_path, encoded_data).await.map_err(|e| {
+                log::error!(
+                    "Failed to write partition index file for partition {}: {}",
+                    partition,
+                    e
+                );
+                e
+            })?;
+        } else {
+            log::debug!(
+                "No entries to save for partition {}, skipping file write",
+                partition
+            );
         }
 
-        log::info!("Successfully saved all partition indexes");
         Ok(())
     }
 
-    /// Load all partition indexes from disk
     async fn load_indexes(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut loaded_count = 0;
 
@@ -404,37 +529,97 @@ impl PartitionedBytesStorage {
             let index_path = self.index_file_path(partition);
 
             if index_path.exists() {
-                match fs::read_to_string(&index_path).await {
-                    Ok(json_data) => match serde_json::from_str::<PartitionIndex>(&json_data) {
-                        Ok(partition_index) => {
-                            if partition_index.partition == partition {
-                                let part_idx = partition as usize;
-                                let index_lock = self.indexes[part_idx].clone();
+                match fs::read(&index_path).await {
+                    Ok(encoded_data) => {
+                        let mut cursor = Cursor::new(encoded_data.as_slice());
+                        match decode_value(&mut cursor) {
+                            Ok(partition_index) => {
+                                if let Value::Message(fields) = partition_index {
+                                    let mut loaded_partition = None;
+                                    let mut entries = HashMap::new();
 
-                                let mut idx = index_lock.write().await;
-                                *idx = partition_index.entries;
-                                loaded_count += 1;
-                                log::debug!(
-                                    "Loaded index for partition {} from {:?}",
-                                    partition,
-                                    index_path
-                                );
-                            } else {
+                                    for field in fields {
+                                        match field.number {
+                                            1 => {
+                                                if let Value::Int32(p) = field.value {
+                                                    loaded_partition = Some(p as u32);
+                                                }
+                                            }
+                                            2 => {
+                                                if let Value::Message(entry_fields) = field.value {
+                                                    for entry_field in entry_fields {
+                                                        if let Value::Message(entry_data) =
+                                                            entry_field.value
+                                                        {
+                                                            let mut chunk_id = None;
+                                                            let mut chunk_meta = None;
+
+                                                            for entry in entry_data {
+                                                                match entry.number {
+                                                                    1 => {
+                                                                        if let Value::Int64(id) =
+                                                                            entry.value
+                                                                        {
+                                                                            chunk_id =
+                                                                                Some(id as u64);
+                                                                        }
+                                                                    }
+                                                                    2 => {
+                                                                        chunk_meta = Some(
+                                                                            ChunkMeta::from_value(
+                                                                                entry.value,
+                                                                            )?,
+                                                                        );
+                                                                    }
+                                                                    _ => {}
+                                                                }
+                                                            }
+
+                                                            if let (Some(id), Some(meta)) =
+                                                                (chunk_id, chunk_meta)
+                                                            {
+                                                                entries.insert(id, meta);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+
+                                    if let Some(loaded_part) = loaded_partition {
+                                        if loaded_part == partition {
+                                            let part_idx = partition as usize;
+                                            let index_lock = self.indexes[part_idx].clone();
+
+                                            let mut idx = index_lock.write().await;
+                                            *idx = entries;
+                                            loaded_count += 1;
+                                            log::debug!(
+                                                "Loaded index for partition {} from {:?}",
+                                                partition,
+                                                index_path
+                                            );
+                                        } else {
+                                            log::warn!(
+                                                "Index file for partition {} contains data for partition {}, skipping",
+                                                partition,
+                                                loaded_part
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
                                 log::warn!(
-                                    "Index file for partition {} contains data for partition {}, skipping",
+                                    "Failed to parse index file for partition {}: {}, skipping",
                                     partition,
-                                    partition_index.partition
+                                    e
                                 );
                             }
                         }
-                        Err(e) => {
-                            log::warn!(
-                                "Failed to parse index file for partition {}: {}, skipping",
-                                partition,
-                                e
-                            );
-                        }
-                    },
+                    }
                     Err(e) => {
                         log::warn!(
                             "Failed to read index file for partition {}: {}, skipping",
@@ -455,13 +640,11 @@ impl PartitionedBytesStorage {
         Ok(())
     }
 
-    /// Get the file path for a partition's index
     fn index_file_path(&self, partition: u32) -> PathBuf {
-        self.base_dir.join(format!("part_{partition}_index.json"))
+        self.base_dir.join(format!("part_{partition}_index.c4"))
     }
 }
 
-/// Public metadata for a chunk
 #[derive(Debug, Clone)]
 pub struct ChunkMetadata {
     pub chunk_id: u64,
@@ -471,7 +654,6 @@ pub struct ChunkMetadata {
     pub partition: u32,
 }
 
-/// Chunk data with metadata
 pub struct ChunkWithMetadata {
     pub metadata: ChunkMetadata,
     pub stream: Box<dyn Stream<Item = Vec<u8>> + Unpin + Send>,

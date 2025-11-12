@@ -33,7 +33,7 @@ impl MigrationPlanner {
         new_nodes: Vec<Node>,
     ) -> Result<MigrationPlan, Box<dyn Error>> {
         let mut plan = MigrationPlan::new();
-        let mut processed_objects = HashSet::new(); // Track objects we've already planned
+        let mut processed_objects = HashSet::new();
 
         let previous_ring =
             ConsistentHashRing::new(previous_nodes.clone(), self.virtual_nodes_per_node);
@@ -57,7 +57,6 @@ impl MigrationPlanner {
             };
 
             for object in objects {
-                // Skip if we've already processed this object
                 let object_key = format!("{}/{}", object.bucket_name, object.object_key);
                 if processed_objects.contains(&object_key) {
                     continue;
@@ -75,7 +74,6 @@ impl MigrationPlanner {
                     new_nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
                 );
 
-                // if previous nodes == new nodes, skip
                 if previous_nodes == new_nodes {
                     log::debug!(
                         "No change in nodes for object {}/{}",
@@ -107,7 +105,6 @@ impl MigrationPlanner {
         Ok(plan)
     }
 
-    /// Queries all objects from a specific node
     async fn query_node_objects(
         &self,
         node_id: &str,

@@ -40,20 +40,56 @@ impl BucketsMetadataStorage {
     }
 
     async fn save_to_file(&self) -> Result<(), Box<dyn std::error::Error>> {
+        log::debug!(
+            "Starting to save bucket metadata to file: {}",
+            self.file_path
+        );
+
         let data = self.data.read().await;
-        let bytes = data
-            .to_bytes()
-            .map_err(|e| format!("Failed to encode metadata: {}", e))?;
+        log::debug!("Acquired read lock for bucket metadata, encoding data");
+
+        let bytes = data.to_bytes().map_err(|e| {
+            log::error!("Failed to encode bucket metadata: {}", e);
+            format!("Failed to encode metadata: {}", e)
+        })?;
+
+        log::debug!(
+            "Successfully encoded bucket metadata to {} bytes, creating/opening file",
+            bytes.len()
+        );
 
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .open(&self.file_path)
-            .await?;
+            .await
+            .map_err(|e| {
+                log::error!(
+                    "Failed to open file '{}' for writing: {}",
+                    self.file_path,
+                    e
+                );
+                e
+            })?;
 
-        file.write_all(&bytes).await?;
-        file.sync_all().await?;
+        log::debug!("File opened successfully, writing {} bytes", bytes.len());
+        file.write_all(&bytes).await.map_err(|e| {
+            log::error!("Failed to write bucket metadata to file: {}", e);
+            e
+        })?;
+
+        log::debug!("Data written, syncing file to disk");
+        file.sync_all().await.map_err(|e| {
+            log::error!("Failed to sync bucket metadata file: {}", e);
+            e
+        })?;
+
+        log::info!(
+            "Successfully saved bucket metadata to file '{}' ({} bytes)",
+            self.file_path,
+            bytes.len()
+        );
         Ok(())
     }
 
@@ -114,23 +150,58 @@ impl BucketsMetadataStorage {
         bucket_name: &str,
         object_name: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        log::info!(
+            "Starting removal of object '{}' from bucket '{}'",
+            object_name,
+            bucket_name
+        );
+
         let mut data = self.data.write().await;
+        log::debug!("Acquired write lock for bucket metadata storage");
 
         let bucket = data
             .buckets
             .iter_mut()
             .find(|bucket| bucket.name == bucket_name)
-            .ok_or("Bucket not found")?;
+            .ok_or_else(|| {
+                log::warn!("Bucket '{}' not found during object removal", bucket_name);
+                "Bucket not found"
+            })?;
+
+        log::debug!(
+            "Found bucket '{}' with {} objects before removal",
+            bucket_name,
+            bucket.objects.len()
+        );
 
         let initial_len = bucket.objects.len();
         bucket.objects.retain(|obj| obj != object_name);
+        let removed_count = initial_len - bucket.objects.len();
 
-        if bucket.objects.len() == initial_len {
+        if removed_count == 0 {
+            log::warn!(
+                "Object '{}' not found in bucket '{}' - no objects were removed",
+                object_name,
+                bucket_name
+            );
             return Err("Object not found in bucket".into());
         }
 
+        log::info!(
+            "Successfully removed {} instance(s) of object '{}' from bucket '{}'. Bucket now has {} objects",
+            removed_count,
+            object_name,
+            bucket_name,
+            bucket.objects.len()
+        );
+
         drop(data);
-        self.save_to_file().await
+
+        log::debug!("Persisting updated bucket metadata to file");
+        self.save_to_file().await?;
+        log::info!("Successfully persisted bucket metadata after object removal");
+
+        Ok(())
     }
 
     pub async fn remove_bucket(&self, bucket_name: &str) -> Result<(), Box<dyn std::error::Error>> {

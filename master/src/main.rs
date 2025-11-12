@@ -24,7 +24,6 @@ pub mod hashing;
 pub mod migration;
 pub mod model;
 
-/// Master node for distributed object storage
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
@@ -128,7 +127,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
 
         let mut errors = Vec::new();
 
-        // Clone the client pool to avoid holding the lock across await points
         let client_pool_clone = {
             let client_pool_guard = self
                 .client_pool
@@ -144,7 +142,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             match client.clone().create_bucket(req).await {
                 Ok(_) => {}
                 Err(e) => {
-                    // Ignore "already exists" errors as they're not actual failures
                     if e.code() != tonic::Code::AlreadyExists {
                         errors.push(e.to_string());
                     }
@@ -176,7 +173,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let mut all_buckets = std::collections::HashSet::new();
         let mut errors = Vec::new();
 
-        // Clone the client pool to avoid holding the lock across await points
         let client_pool_clone = {
             let client_pool_guard = self
                 .client_pool
@@ -237,7 +233,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
 
         let mut errors = Vec::new();
 
-        // Clone the client pool to avoid holding the lock across await points
         let client_pool_clone = {
             let client_pool_guard = self
                 .client_pool
@@ -305,7 +300,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let key = get_key_for_object(&bucket_name, &object_key);
         let replica_clients = self.get_replica_clients_for_key(&key).await;
 
-        // Buffer all data messages
         let mut data_messages = Vec::new();
         while let Some(msg) = stream.message().await.transpose() {
             match msg {
@@ -324,7 +318,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             }
         }
 
-        // Create streams for each replica
         let mut handles = Vec::new();
         for client in replica_clients {
             let client_clone = client.clone();
@@ -333,7 +326,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             let data_messages_clone = data_messages.clone();
 
             let request_stream = async_stream::stream! {
-                // First message with ObjectID including version
                 yield PutObjectRequest {
                     req: Some(grpc_server::object_storage::put_object_request::Req::Id(
                         grpc_server::object_storage::ObjectId {
@@ -343,7 +335,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                     )),
                 };
 
-                // Then all data messages
                 for msg in data_messages_clone {
                     yield msg;
                 }
@@ -356,7 +347,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             handles.push(handle);
         }
 
-        // Wait for all replicas to complete
         let mut results = Vec::new();
         for handle in handles {
             match handle.await {
@@ -368,20 +358,25 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             }
         }
 
-        // Check if all succeeded
         let mut success_response = None;
+        let mut success_count = 0;
+
         for result in results {
             match result {
                 Ok(response) => {
                     if success_response.is_none() {
                         success_response = Some(response);
                     }
+                    success_count += 1;
                 }
                 Err(e) => {
-                    log::error!("Replication failed on one node: {}", e);
-                    return Err(Status::internal("replication failed on some nodes"));
+                    log::warn!("Replication failed on one node: {}", e);
                 }
             }
+        }
+
+        if success_count < self.replication_factor / 2 + 1 {
+            return Err(Status::internal("replication failed on some nodes"));
         }
 
         let response = success_response.ok_or_else(|| {
@@ -410,7 +405,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let key = get_key_for_object(&bucket_name, &object_key);
         let replica_clients = self.get_replica_clients_for_key(&key).await;
 
-        // Try each replica in order until we get a valid response
         let mut last_error = None;
 
         for (i, client) in replica_clients.iter().enumerate() {
@@ -427,7 +421,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                         i
                     );
 
-                    // Try to peek at the stream to see if object exists, and re-insert first chunk
                     let mut inner = response.into_inner();
                     match inner.message().await {
                         Ok(Some(first_chunk)) => {
@@ -438,9 +431,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                                 i
                             );
                             let s = async_stream::stream! {
-                                // yield the first chunk we peeked
                                 yield Ok(first_chunk);
-                                // then stream the rest
                                 while let Some(next) = inner.message().await.transpose() {
                                     match next {
                                         Ok(msg) => yield Ok(msg),
@@ -518,7 +509,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let mut all_objects = Vec::new();
         let mut errors = Vec::new();
 
-        // Clone the client pool to avoid holding the lock across await points
         let client_pool_clone = {
             let client_pool_guard = self
                 .client_pool
@@ -554,7 +544,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             )));
         }
 
-        // Dedupe by object key (within the same bucket) across replicas; keep newest version
         use std::collections::HashMap;
         let mut by_key: HashMap<String, grpc_server::object_storage::ObjectMetadata> =
             HashMap::new();
@@ -570,7 +559,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             by_key.entry(key).or_insert(meta);
         }
 
-        // Optional: deterministic sort by object key
         let mut deduped: Vec<_> = by_key.into_values().collect();
         deduped.sort_by(|a, b| {
             let ka =
@@ -584,7 +572,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             ka.cmp(&kb)
         });
 
-        // Apply pagination on deduped set
         let offset = offset.unwrap_or(0) as usize;
         let limit = limit.unwrap_or(20) as usize;
         let deduped = deduped.into_iter().skip(offset).take(limit).collect();
@@ -612,7 +599,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let key = get_key_for_object(&bucket_name, &object_key);
         let replica_clients = self.get_replica_clients_for_key(&key).await;
 
-        // Try each replica in order until success
         for (i, client) in replica_clients.iter().enumerate() {
             let request = Request::new(HeadObjectRequest {
                 id: Some(object_id.clone()),
@@ -636,7 +622,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                         i,
                         e
                     );
-                    // Continue to next replica
                 }
             }
         }
@@ -669,7 +654,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let key = get_key_for_object(&bucket_name, &object_key);
         let replica_clients = self.get_replica_clients_for_key(&key).await;
 
-        // Delete from all replicas
         let mut handles = Vec::new();
         for client in replica_clients {
             let client_clone = client.clone();
@@ -684,7 +668,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             handles.push(handle);
         }
 
-        // Wait for all replicas to complete
         let mut errors = Vec::new();
         for handle in handles {
             match handle.await {
@@ -738,7 +721,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             node_to_add.address
         );
 
-        // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
         let current_nodes = {
             let active_nodes_guard = self
                 .active_nodes
@@ -747,13 +729,11 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             active_nodes_guard.clone()
         };
 
-        // Create new node list with the added node
         let mut new_nodes = current_nodes.clone();
         if !new_nodes.iter().any(|n| n.id == node_to_add.id) {
             new_nodes.push(node_to_add.clone());
         }
 
-        // Generate migration plan
         let client_pool_clone = {
             let client_pool_guard = self
                 .client_pool
@@ -774,7 +754,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                 Status::internal(format!("Failed to generate migration plan: {}", e))
             })?;
 
-        // Convert to protobuf response
         let proto_operations: Vec<ProtoMigrationOperation> = migration_plan
             .operations
             .into_iter()
@@ -795,7 +774,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
 
         Ok(Response::new(MigrationPlanResponse {
             operations: proto_operations,
-            total_objects: operation_count, // For simplicity, assuming each operation is one object
+            total_objects: operation_count,
             operation_count,
         }))
     }
@@ -810,7 +789,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             address: req.node_address.clone(),
         };
 
-        // Add new node to client pool
         let address = format!("http://{}", node_to_add.address);
         match C4Client::connect(address.clone()).await {
             Ok(client) => {
@@ -836,7 +814,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
 
         log::info!("Adding node: {} at {}", node_to_add.id, node_to_add.address);
 
-        // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
         let current_nodes = {
             let active_nodes_guard = self
                 .active_nodes
@@ -845,13 +822,11 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             active_nodes_guard.clone()
         };
 
-        // Create new node list with the added node
         let mut new_nodes = current_nodes.clone();
         if !new_nodes.iter().any(|n| n.id == node_to_add.id) {
             new_nodes.push(node_to_add.clone());
         }
 
-        // Generate migration plan
         let client_pool_clone = {
             let client_pool_guard = self
                 .client_pool
@@ -872,7 +847,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                 Status::internal(format!("Failed to generate migration plan: {}", e))
             })?;
 
-        // Execute migration
         let migration_service = MigrationService::new(client_pool_clone);
         migration_service
             .migrate_data(migration_plan.clone())
@@ -882,7 +856,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                 Status::internal(format!("Failed to execute migration: {}", e))
             })?;
 
-        // Update master ring with new nodes
+        log::debug!("Updating ring  with new nodes: {:?}", new_nodes.clone());
         {
             let mut ring_guard = self
                 .ring
@@ -891,7 +865,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             *ring_guard = ConsistentHashRing::new(new_nodes.clone(), self.virtual_nodes_per_node);
         }
 
-        // Update active nodes
         {
             let mut active_nodes_guard = self
                 .active_nodes
@@ -912,7 +885,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let req = request.into_inner();
         let node_to_remove = Node {
             id: req.node_id.clone(),
-            address: "".to_string(), // Address not needed for removal planning
+            address: "".to_string(),
         };
 
         log::info!(
@@ -920,7 +893,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             node_to_remove.id
         );
 
-        // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
         let current_nodes = {
             let active_nodes_guard = self
                 .active_nodes
@@ -929,7 +901,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             active_nodes_guard.clone()
         };
 
-        // Create new node list without the removed node
         let new_nodes: Vec<Node> = current_nodes
             .iter()
             .filter(|n| n.id != node_to_remove.id)
@@ -942,7 +913,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             new_nodes
         );
 
-        // Generate migration plan
         let client_pool_clone = {
             let client_pool_guard = self
                 .client_pool
@@ -963,7 +933,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                 Status::internal(format!("Failed to generate migration plan: {}", e))
             })?;
 
-        // Convert to protobuf response
         let proto_operations: Vec<ProtoMigrationOperation> = migration_plan
             .operations
             .into_iter()
@@ -985,7 +954,7 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
 
         Ok(Response::new(MigrationPlanResponse {
             operations: proto_operations,
-            total_objects: operation_count, // For simplicity, assuming each operation is one object
+            total_objects: operation_count,
             operation_count,
         }))
     }
@@ -997,12 +966,11 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
         let req = request.into_inner();
         let node_to_remove = Node {
             id: req.node_id.clone(),
-            address: "".to_string(), // Address not needed for removal
+            address: "".to_string(),
         };
 
         log::info!("Removing node: {}", node_to_remove.id);
 
-        // Get current nodes from active_nodes (physical nodes only, no virtual nodes)
         let current_nodes = {
             let active_nodes_guard = self
                 .active_nodes
@@ -1011,14 +979,12 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             active_nodes_guard.clone()
         };
 
-        // Create new node list without the removed node
         let new_nodes: Vec<Node> = current_nodes
             .iter()
             .filter(|n| n.id != node_to_remove.id)
             .cloned()
             .collect();
 
-        // Generate migration plan
         let client_pool_clone = {
             let client_pool_guard = self
                 .client_pool
@@ -1039,7 +1005,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                 Status::internal(format!("Failed to generate migration plan: {}", e))
             })?;
 
-        // Execute migration
         let migration_service = MigrationService::new(client_pool_clone);
         migration_service
             .migrate_data(migration_plan.clone())
@@ -1049,7 +1014,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
                 Status::internal(format!("Failed to execute migration: {}", e))
             })?;
 
-        // Update master ring with new nodes
         {
             let mut ring_guard = self
                 .ring
@@ -1058,7 +1022,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             *ring_guard = ConsistentHashRing::new(new_nodes.clone(), self.virtual_nodes_per_node);
         }
 
-        // Update active nodes
         {
             let mut active_nodes_guard = self
                 .active_nodes
@@ -1067,7 +1030,6 @@ impl grpc_server::object_storage::c4_server::C4 for MasterHandler {
             *active_nodes_guard = new_nodes;
         }
 
-        // Remove node from client pool
         {
             let mut client_pool_guard = self
                 .client_pool

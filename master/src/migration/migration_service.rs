@@ -47,18 +47,15 @@ impl MigrationService {
                     object_key: operation.object_key.clone(),
                 };
 
-                // Ensure bucket exists on destination before migrating objects
                 self.ensure_bucket_exists(&destination_client, &operation.bucket_name)
                     .await?;
 
-                // stream data from source to destination
                 let get_request = tonic::Request::new(GetObjectRequest {
                     id: Some(object_id.clone()),
                 });
                 let mut get_response = source_client.clone().get_object(get_request).await?;
 
                 let put_request_stream = async_stream::stream! {
-                    // first message: send object ID
                     yield PutObjectRequest {
                         req: Some(grpc_server::object_storage::put_object_request::Req::Id(object_id.clone())),
                     };
@@ -72,14 +69,11 @@ impl MigrationService {
                     }
                 };
 
-                // Convert the stream to a tonic::Request
                 let put_request = tonic::Request::new(put_request_stream);
 
-                // Send the stream to the destination client
                 let _put_response = destination_client.clone().put_object(put_request).await?;
             }
 
-            // also we should delete the nodes where the object is not needed anymore
             let nodes_to_delete_object_from = operation
                 .previous_nodes
                 .iter()
@@ -114,14 +108,11 @@ impl MigrationService {
         Ok(())
     }
 
-    /// Ensure bucket exists on destination node, create it if it doesn't
     async fn ensure_bucket_exists(
         &self,
         destination_client: &C4Client<Channel>,
         bucket_name: &str,
     ) -> Result<(), Box<dyn Error>> {
-        // Try to create the bucket - if it already exists, this will fail gracefully
-        // but we don't want to fail the entire migration for existing buckets
         let create_bucket_request = tonic::Request::new(CreateBucketRequest {
             bucket_name: bucket_name.to_string(),
         });
@@ -135,8 +126,6 @@ impl MigrationService {
                 log::info!("Created bucket '{}' on destination node", bucket_name);
             }
             Err(e) => {
-                // If bucket already exists, that's fine - just log it
-                // If it's another error, we should log it but continue
                 if e.message().contains("already exists") || e.message().contains("exists") {
                     log::debug!(
                         "Bucket '{}' already exists on destination node",
@@ -148,8 +137,6 @@ impl MigrationService {
                         bucket_name,
                         e
                     );
-                    // We don't fail here because the bucket might already exist
-                    // and we want to continue with the migration
                 }
             }
         }

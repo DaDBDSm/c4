@@ -15,7 +15,6 @@ service C4 {
   rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse) {}
   rpc DeleteObject(DeleteObjectRequest) returns (google.protobuf.Empty) {}
 
-  // Migration endpoints
   rpc GetMigrationPlan(AddNodeRequest) returns (MigrationPlanResponse) {}
   rpc GetMigrationPlanByRemovingNode(RemoveNodeRequest) returns (MigrationPlanResponse) {}
   rpc AddNode(AddNodeRequest) returns (google.protobuf.Empty) {}
@@ -93,7 +92,6 @@ message ObjectID {
   string object_key = 2;
 }
 
-// Migration messages
 message MigrationOperation {
   repeated string prev_nodes = 1;
   repeated string new_nodes = 2;
