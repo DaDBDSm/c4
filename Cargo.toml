@@ -1,3 +1,3 @@
 [workspace]
 resolver = "3"
-members = ["db", "encoder", "encoders-comparison", "grpc-server"]
+members = ["db", "encoder", "encoders-comparison", "grpc-server", "master"]

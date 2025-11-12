@@ -1,0 +1,146 @@
+use std::{collections::HashMap, error::Error};
+
+use grpc_server::object_storage::{
+    CreateBucketRequest, DeleteObjectRequest, GetObjectRequest, ObjectId, PutObjectRequest,
+    c4_client::C4Client,
+};
+use tonic::transport::Channel;
+
+use crate::migration::dto::MigrationPlan;
+
+pub struct MigrationService {
+    client_pool: HashMap<String, C4Client<Channel>>,
+}
+
+impl MigrationService {
+    pub fn new(client_pool: HashMap<String, C4Client<Channel>>) -> Self {
+        Self { client_pool }
+    }
+
+    pub async fn migrate_data(&self, migration_plan: MigrationPlan) -> Result<(), Box<dyn Error>> {
+        for operation in migration_plan.operations {
+            let new_nodes_without_object = operation
+                .new_nodes
+                .iter()
+                .filter(|n| !operation.previous_nodes.contains(n))
+                .collect::<Vec<_>>();
+
+            let node_to_take_data_from = operation.previous_nodes.first().unwrap();
+
+            let source_client = self
+                .client_pool
+                .get(node_to_take_data_from)
+                .ok_or_else(|| {
+                    format!(
+                        "Source client not found for node: {}",
+                        node_to_take_data_from
+                    )
+                })?;
+
+            for new_node in new_nodes_without_object {
+                let destination_client = self.client_pool.get(new_node).ok_or_else(|| {
+                    format!("Destination client not found for node: {}", new_node)
+                })?;
+
+                let object_id = ObjectId {
+                    bucket_name: operation.bucket_name.clone(),
+                    object_key: operation.object_key.clone(),
+                };
+
+                self.ensure_bucket_exists(&destination_client, &operation.bucket_name)
+                    .await?;
+
+                let get_request = tonic::Request::new(GetObjectRequest {
+                    id: Some(object_id.clone()),
+                });
+                let mut get_response = source_client.clone().get_object(get_request).await?;
+
+                let put_request_stream = async_stream::stream! {
+                    yield PutObjectRequest {
+                        req: Some(grpc_server::object_storage::put_object_request::Req::Id(object_id.clone())),
+                    };
+
+                    while let Some(chunk) = get_response.get_mut().message().await.transpose() {
+                        if let Ok(chunk) = chunk {
+                            yield PutObjectRequest {
+                                req: Some(grpc_server::object_storage::put_object_request::Req::ObjectPart(chunk.object_part)),
+                            };
+                        }
+                    }
+                };
+
+                let put_request = tonic::Request::new(put_request_stream);
+
+                let _put_response = destination_client.clone().put_object(put_request).await?;
+            }
+
+            let nodes_to_delete_object_from = operation
+                .previous_nodes
+                .iter()
+                .filter(|node| !operation.new_nodes.contains(node))
+                .collect::<Vec<_>>();
+
+            for node in nodes_to_delete_object_from {
+                let client = self.client_pool.get(node).ok_or_else(|| {
+                    format!(
+                        "Source client not found for node: {}",
+                        node_to_take_data_from
+                    )
+                })?;
+
+                let delete_request = tonic::Request::new(DeleteObjectRequest {
+                    id: Some(ObjectId {
+                        bucket_name: operation.bucket_name.clone(),
+                        object_key: operation.object_key.clone(),
+                    }),
+                });
+
+                log::debug!(
+                    "Deleting object {:?} on node {:?}",
+                    operation.object_key,
+                    node
+                );
+
+                let _ = client.clone().delete_object(delete_request).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn ensure_bucket_exists(
+        &self,
+        destination_client: &C4Client<Channel>,
+        bucket_name: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        let create_bucket_request = tonic::Request::new(CreateBucketRequest {
+            bucket_name: bucket_name.to_string(),
+        });
+
+        match destination_client
+            .clone()
+            .create_bucket(create_bucket_request)
+            .await
+        {
+            Ok(_) => {
+                log::info!("Created bucket '{}' on destination node", bucket_name);
+            }
+            Err(e) => {
+                if e.message().contains("already exists") || e.message().contains("exists") {
+                    log::debug!(
+                        "Bucket '{}' already exists on destination node",
+                        bucket_name
+                    );
+                } else {
+                    log::warn!(
+                        "Failed to create bucket '{}' on destination node: {}",
+                        bucket_name,
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
