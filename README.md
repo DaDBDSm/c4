@@ -14,34 +14,6 @@ Distributed object storage system with consistent hashing, replication, and dyna
 - **gRPC API**: High-performance communication between components
 - **Chunk-based Storage**: Efficient handling of large objects
 
-## Architecture
-
-```
-┌─────────────┐
-│   Client    │
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│Master Node  │ ◄─── Consistent Hash Ring + Replication
-└──────┬──────┘
-       │
-       ├───────┬───────┬───────┐
-       ▼       ▼       ▼       ▼
-   ┌────┐  ┌────┐  ┌────┐  ┌────┐
-   │ N1 │  │ N2 │  │ N3 │  │ N4 │  Storage Nodes
-   └────┘  └────┘  └────┘  └────┘
-   (replicas distributed across nodes)
-```
-
-## Documentation
-
-- [Replication Design & Implementation](./REPLICATION.md)
-- [Integration Tests](./REPLICATION_TESTS.md)
-- [Recent Improvements](./IMPROVEMENTS.md)
-- [Migration Demo](./migration_demo.md)
-- [Summary](./SUMMARY.md)
-
 ## Quick Start
 
 ### Building
@@ -75,19 +47,9 @@ cargo run --bin master -- \
 
 ## Testing
 
-### Unit Tests
-
 ```bash
 cargo test
 ```
-
-### Integration Tests (Replication)
-
-```bash
-cargo test --test replication_tests -- --test-threads=1
-```
-
-See [REPLICATION_TESTS.md](./REPLICATION_TESTS.md) for detailed test descriptions.
 
 ## Configuration
 
@@ -116,7 +78,3 @@ c4/
 ├── grpc-server/     # Protobuf definitions
 └── encoder/         # Data encoding utilities
 ```
-
-## License
-
-MIT
